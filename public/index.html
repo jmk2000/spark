@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPARK - Server Power Automated Remote Kontrol</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header .subtitle {
+            font-size: 1.1rem;
+            opacity: 0.9;
+            margin-bottom: 5px;
+        }
+
+        .header .acronym {
+            font-size: 0.9rem;
+            opacity: 0.8;
+            font-style: italic;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(0,0,0,0.15);
+        }
+
+        .card-title {
+            font-size: 1.4rem;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #2d3748;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse 2s infinite;
+        }
+
+        .status-online {
+            background-color: #48bb78;
+        }
+
+        .status-offline {
+            background-color: #f56565;
+        }
+
+        .status-unknown {
+            background-color: #ed8936;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .button {
+            background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin: 5px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.1);
+        }
+
+        .button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+        }
+
+        .button:active {
+            transform: translateY(0);
+        }
+
+        .button.danger {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        }
+
+        .button.success {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        }
+
+        .button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin: 15px 0;
+        }
+
+        .info-item {
+            background: #f7fafc;
+            padding: 12px;
+            border-radius: 6px;
+            border-left: 4px solid #4f46e5;
+        }
+
+        .info-label {
+            font-size: 0.85rem;
+            color: #718096;
+            margin-bottom: 4px;
+        }
+
+        .info-value {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #2d3748;
+        }
+
+        .service-status {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        .service-status:last-child {
+            border-bottom: none;
+        }
+
+        .service-name {
+            font-weight: 500;
+        }
+
+        .service-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-online {
+            background-color: #c6f6d5;
+            color: #22543d;
+        }
+
+        .badge-offline {
+            background-color: #fed7d7;
+            color: #742a2a;
+        }
+
+        .logs-container {
+            background: #1a202c;
+            color: #e2e8f0;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.9rem;
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 15px;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 4px 0;
+        }
+
+        .log-timestamp {
+            color: #68d391;
+            margin-right: 8px;
+        }
+
+        .log-level {
+            margin-right: 8px;
+            font-weight: bold;
+        }
+
+        .log-info { color: #63b3ed; }
+        .log-warn { color: #f6e05e; }
+        .log-error { color: #fc8181; }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4f46e5;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        .performance-bar {
+            background: #e2e8f0;
+            height: 8px;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 5px;
+        }
+
+        .performance-fill {
+            height: 100%;
+            transition: width 0.5s ease;
+            border-radius: 4px;
+        }
+
+        .performance-cpu { background: linear-gradient(90deg, #4ade80, #22c55e); }
+        .performance-memory { background: linear-gradient(90deg, #60a5fa, #3b82f6); }
+        .performance-disk { background: linear-gradient(90deg, #a78bfa, #8b5cf6); }
+
+        .spark-brand {
+            display: inline-block;
+            background: linear-gradient(45deg, #ffd700, #ff6b35);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-weight: 700;
+            text-shadow: none;
+        }
+
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .info-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚡ <span class="spark-brand">SPARK</span></h1>
+            <p class="subtitle">Server Power Automated Remote Kontrol</p>
+            <p class="acronym">Monitor and control your Ubuntu server's power state</p>
+        </div>
+
+        <div class="grid">
+            <!-- Server Status Card -->
+            <div class="card">
+                <div class="card-title">
+                    <span class="status-indicator" id="statusIndicator"></span>
+                    Server Status
+                </div>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">Status</div>
+                        <div class="info-value" id="serverStatus">Checking...</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Last Seen</div>
+                        <div class="info-value" id="lastSeen">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Response Time</div>
+                        <div class="info-value" id="responseTime">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Server IP</div>
+                        <div class="info-value" id="serverIP">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SPARK Power Controls Card -->
+            <div class="card">
+                <div class="card-title">⚡ SPARK Power Controls</div>
+                <div style="text-align: center;">
+                    <button class="button success" id="wakeBtn" onclick="wakeServer()">
+                        🟢 Wake Server
+                    </button>
+                    <button class="button danger" id="sleepBtn" onclick="sleepServer()">
+                        🔴 Sleep Server
+                    </button>
+                    <button class="button" id="refreshBtn" onclick="refreshStatus()">
+                        🔄 Refresh Status
+                    </button>
+                </div>
+                <div id="actionMessage" style="margin-top: 15px; padding: 10px; border-radius: 6px; display: none;"></div>
+            </div>
+
+            <!-- Services Status Card -->
+            <div class="card">
+                <div class="card-title">🔧 Services Status</div>
+                <div id="servicesStatus">
+                    <div class="service-status">
+                        <span class="service-name">Ping</span>
+                        <span class="service-badge" id="pingStatus">Unknown</span>
+                    </div>
+                    <div class="service-status">
+                        <span class="service-name">SSH (Port 22)</span>
+                        <span class="service-badge" id="sshStatus">Unknown</span>
+                    </div>
+                    <div class="service-status">
+                        <span class="service-name">HTTP (Port 11434)</span>
+                        <span class="service-badge" id="httpStatus">Unknown</span>
+                    </div>
+                    <div class="service-status">
+                        <span class="service-name">Ollama API</span>
+                        <span class="service-badge" id="ollamaStatus">Unknown</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Performance Metrics Card -->
+            <div class="card">
+                <div class="card-title">📊 Performance Metrics</div>
+                <div id="performanceMetrics">
+                    <div class="info-item">
+                        <div class="info-label">CPU Usage</div>
+                        <div class="info-value" id="cpuUsage">-</div>
+                        <div class="performance-bar">
+                            <div class="performance-fill performance-cpu" id="cpuBar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Memory Usage</div>
+                        <div class="info-value" id="memoryUsage">-</div>
+                        <div class="performance-bar">
+                            <div class="performance-fill performance-memory" id="memoryBar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Disk Usage</div>
+                        <div class="info-value" id="diskUsage">-</div>
+                        <div class="performance-bar">
+                            <div class="performance-fill performance-disk" id="diskBar" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SPARK Configuration Card -->
+            <div class="card">
+                <div class="card-title">⚙️ SPARK Configuration</div>
+                <div id="configInfo">
+                    <div class="info-item">
+                        <div class="info-label">Target Server IP</div>
+                        <div class="info-value" id="configIP">Loading...</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">MAC Address</div>
+                        <div class="info-value" id="configMAC">Loading...</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">SSH Port</div>
+                        <div class="info-value" id="configSSH">Loading...</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">HTTP Port</div>
+                        <div class="info-value" id="configHTTP">Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SPARK System Logs Card -->
+            <div class="card full-width">
+                <div class="card-title">📋 SPARK System Logs</div>
+                <div class="logs-container" id="logsContainer">
+                    <div class="log-entry">
+                        <span class="log-timestamp">[Loading...]</span>
+                        <span class="log-level log-info">[INFO]</span>
+                        Initializing SPARK server monitoring...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Socket.IO connection
+        const socket = io();
+        let isConnected = false;
+
+        // State management
+        let currentStatus = null;
+        let logs = [];
+
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeApp();
+        });
+
+        function initializeApp() {
+            loadConfiguration();
+            refreshStatus();
+            setupSocketListeners();
+            startAutoRefresh();
+        }
+
+        // Socket.IO event listeners
+        function setupSocketListeners() {
+            socket.on('connect', () => {
+                isConnected = true;
+                addLog('info', 'Connected to SPARK server');
+                socket.emit('subscribe-status');
+            });
+
+            socket.on('disconnect', () => {
+                isConnected = false;
+                addLog('warn', 'Disconnected from SPARK server');
+            });
+
+            socket.on('statusUpdate', (status) => {
+                updateServerStatus(status);
+            });
+
+            socket.on('error', (error) => {
+                addLog('error', `SPARK Error: ${error.message}`);
+            });
+        }
+
+        // Load server configuration
+        async function loadConfiguration() {
+            try {
+                const response = await fetch('/api/config');
+                const config = await response.json();
+                
+                document.getElementById('configIP').textContent = config.targetServer.ip;
+                document.getElementById('configMAC').textContent = config.targetServer.mac;
+                document.getElementById('configSSH').textContent = config.targetServer.sshPort;
+                document.getElementById('configHTTP').textContent = config.targetServer.httpPort;
+                document.getElementById('serverIP').textContent = config.targetServer.ip;
+                
+            } catch (error) {
+                addLog('error', 'Failed to load SPARK configuration');
+                console.error('Failed to load configuration:', error);
+            }
+        }
+
+        // Refresh server status
+        async function refreshStatus() {
+            try {
+                setButtonLoading('refreshBtn', true);
+                const response = await fetch('/api/status');
+                const status = await response.json();
+                updateServerStatus(status);
+                addLog('info', 'SPARK status refreshed');
+            } catch (error) {
+                addLog('error', 'Failed to refresh SPARK status');
+                console.error('Failed to refresh status:', error);
+            } finally {
+                setButtonLoading('refreshBtn', false);
+            }
+        }
+
+        // Wake server
+        async function wakeServer() {
+            try {
+                setButtonLoading('wakeBtn', true);
+                const response = await fetch('/api/wake', { method: 'POST' });
+                const result = await response.json();
+                
+                showActionMessage(result.message, result.success ? 'success' : 'error');
+                addLog(result.success ? 'info' : 'error', result.message);
+                
+                if (result.success) {
+                    setTimeout(refreshStatus, 5000); // Check status after 5 seconds
+                }
+            } catch (error) {
+                const message = 'Failed to send SPARK wake command';
+                showActionMessage(message, 'error');
+                addLog('error', message);
+                console.error('Wake server error:', error);
+            } finally {
+                setButtonLoading('wakeBtn', false);
+            }
+        }
+
+        // Sleep server
+        async function sleepServer() {
+            if (!confirm('Are you sure you want to put the server to sleep using SPARK?')) {
+                return;
+            }
+
+            try {
+                setButtonLoading('sleepBtn', true);
+                const response = await fetch('/api/sleep', { method: 'POST' });
+                const result = await response.json();
+                
+                showActionMessage(result.message, result.success ? 'success' : 'error');
+                addLog(result.success ? 'info' : 'error', result.message);
+                
+                if (result.success) {
+                    setTimeout(refreshStatus, 3000); // Check status after 3 seconds
+                }
+            } catch (error) {
+                const message = 'Failed to send SPARK sleep command';
+                showActionMessage(message, 'error');
+                addLog('error', message);
+                console.error('Sleep server error:', error);
+            } finally {
+                setButtonLoading('sleepBtn', false);
+            }
+        }
+
+        // Update server status display
+        function updateServerStatus(status) {
+            currentStatus = status;
+            
+            // Update main status
+            const statusElement = document.getElementById('serverStatus');
+            const indicatorElement = document.getElementById('statusIndicator');
+            
+            if (status.isOnline) {
+                statusElement.textContent = 'Online';
+                indicatorElement.className = 'status-indicator status-online';
+            } else {
+                statusElement.textContent = 'Offline';
+                indicatorElement.className = 'status-indicator status-offline';
+            }
+            
+            // Update last seen
+            const lastSeenDate = new Date(status.lastSeen);
+            document.getElementById('lastSeen').textContent = 
+                status.lastSeen === 'Never' ? 'Never' : lastSeenDate.toLocaleString();
+            
+            // Update response time
+            document.getElementById('responseTime').textContent = 
+                status.performance.responseTime ? `${status.performance.responseTime}ms` : '-';
+            
+            // Update services status
+            updateServiceStatus('pingStatus', status.services.ping);
+            updateServiceStatus('sshStatus', status.services.ssh);
+            updateServiceStatus('httpStatus', status.services.http);
+            updateServiceStatus('ollamaStatus', status.services.ollama);
+            
+            // Update performance metrics
+            updatePerformanceMetric('cpuUsage', 'cpuBar', status.performance.cpuUsage);
+            updatePerformanceMetric('memoryUsage', 'memoryBar', status.performance.memoryUsage);
+            updatePerformanceMetric('diskUsage', 'diskBar', status.performance.diskUsage);
+        }
+
+        // Update individual service status
+        function updateServiceStatus(elementId, isOnline) {
+            const element = document.getElementById(elementId);
+            if (isOnline) {
+                element.textContent = 'Online';
+                element.className = 'service-badge badge-online';
+            } else {
+                element.textContent = 'Offline';
+                element.className = 'service-badge badge-offline';
+            }
+        }
+
+        // Update performance metrics
+        function updatePerformanceMetric(valueId, barId, value) {
+            const valueElement = document.getElementById(valueId);
+            const barElement = document.getElementById(barId);
+            
+            if (value !== undefined && value !== null) {
+                valueElement.textContent = `${value.toFixed(1)}%`;
+                barElement.style.width = `${Math.min(value, 100)}%`;
+            } else {
+                valueElement.textContent = 'N/A';
+                barElement.style.width = '0%';
+            }
+        }
+
+        // Show action message
+        function showActionMessage(message, type) {
+            const messageElement = document.getElementById('actionMessage');
+            messageElement.textContent = message;
+            messageElement.style.display = 'block';
+            messageElement.className = '';
+            
+            if (type === 'success') {
+                messageElement.style.backgroundColor = '#c6f6d5';
+                messageElement.style.color = '#22543d';
+                messageElement.style.border = '1px solid #9ae6b4';
+            } else if (type === 'error') {
+                messageElement.style.backgroundColor = '#fed7d7';
+                messageElement.style.color = '#742a2a';
+                messageElement.style.border = '1px solid #feb2b2';
+            }
+            
+            // Hide message after 5 seconds
+            setTimeout(() => {
+                messageElement.style.display = 'none';
+            }, 5000);
+        }
+
+        // Set button loading state
+        function setButtonLoading(buttonId, isLoading) {
+            const button = document.getElementById(buttonId);
+            if (isLoading) {
+                button.disabled = true;
+                button.innerHTML = '<span class="loading"></span> Loading...';
+            } else {
+                button.disabled = false;
+                // Restore original button text
+                if (buttonId === 'wakeBtn') {
+                    button.innerHTML = '🟢 Wake Server';
+                } else if (buttonId === 'sleepBtn') {
+                    button.innerHTML = '🔴 Sleep Server';
+                } else if (buttonId === 'refreshBtn') {
+                    button.innerHTML = '🔄 Refresh Status';
+                }
+            }
+        }
+
+        // Add log entry
+        function addLog(level, message) {
+            const timestamp = new Date().toLocaleTimeString();
+            logs.unshift({ timestamp, level, message });
+            
+            // Keep only last 50 log entries
+            if (logs.length > 50) {
+                logs = logs.slice(0, 50);
+            }
+            
+            updateLogsDisplay();
+        }
+
+        // Update logs display
+        function updateLogsDisplay() {
+            const logsContainer = document.getElementById('logsContainer');
+            logsContainer.innerHTML = logs.map(log => `
+                <div class="log-entry">
+                    <span class="log-timestamp">[${log.timestamp}]</span>
+                    <span class="log-level log-${log.level}">[${log.level.toUpperCase()}]</span>
+                    ${log.message}
+                </div>
+            `).join('');
+        }
+
+        // Auto-refresh status every 30 seconds
+        function startAutoRefresh() {
+            setInterval(() => {
+                if (isConnected) {
+                    // Socket.IO will handle real-time updates
+                    // This is just a fallback
+                } else {
+                    refreshStatus();
+                }
+            }, 30000);
+        }
+
+        // Initialize logs
+        addLog('info', 'SPARK Server Power Manager initialized');
+    </script>
+</body>
+</html>
