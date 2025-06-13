@@ -1,19 +1,4 @@
-# Multi-stage build for optimal size
-FROM node:18-alpine AS builder
-
-WORKDIR /app
-
-# Copy package files
-COPY package*.json ./
-RUN npm ci --only=production
-
-# Copy source code
-COPY . .
-
-# Build the application
-RUN npm run build
-
-# Production stage
+# Use Node.js 18 Alpine
 FROM node:18-alpine
 
 WORKDIR /app
@@ -22,21 +7,34 @@ WORKDIR /app
 RUN apk add --no-cache \
     curl \
     iputils \
-    net-tools
+    net-tools \
+    openssh-client
 
-# Copy built application
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/package*.json ./
+# Copy package files and install ALL dependencies
+COPY package*.json ./
+RUN npm install
+
+# Copy source code
+COPY . .
+
+# Build the application
+RUN npm run build
+
+# Remove dev dependencies after build
+RUN npm prune --omit=dev
 
 # Create non-root user
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nodejs -u 1001
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
 
-# Change ownership
-RUN chown -R nodejs:nodejs /app
+# Create logs and SSH directories with proper permissions
+RUN mkdir -p /app/logs /app/.ssh && \
+    chown -R nodejs:nodejs /app
+
 USER nodejs
+
+# Set up SSH directory with correct permissions
+RUN chmod 700 /app/.ssh
 
 EXPOSE 3000
 

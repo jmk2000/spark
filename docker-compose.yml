@@ -4,7 +4,7 @@ services:
     container_name: spark-power-manager
     restart: unless-stopped
     ports:
-      - "${PORT:-3000}:3000"
+      - "3000:3000"
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - TARGET_SERVER_IP=${TARGET_SERVER_IP}
@@ -16,15 +16,29 @@ services:
       - PORT=${PORT:-3000}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - SSH_USERNAME=${SSH_USERNAME}
-      - SSH_PRIVATE_KEY_PATH=${SSH_PRIVATE_KEY_PATH}
+      - SSH_PRIVATE_KEY_PATH=/app/.ssh/id_rsa
     volumes:
       - ./logs:/app/logs
       - /etc/localtime:/etc/localtime:ro
-      # Mount SSH key if specified
-      - "${SSH_PRIVATE_KEY_PATH:-/dev/null}:${SSH_PRIVATE_KEY_PATH:-/dev/null}:ro"
+      # Mount SSH key for sleep functionality
+      - ${SSH_PRIVATE_KEY_PATH}:/tmp/ssh_key:ro
+    # Add init script to copy and fix SSH key permissions
+    command: >
+      sh -c "
+        cp /tmp/ssh_key /app/.ssh/id_rsa 2>/dev/null || echo 'No SSH key mounted';
+        chmod 600 /app/.ssh/id_rsa 2>/dev/null || echo 'Could not set SSH key permissions';
+        chown nodejs:nodejs /app/.ssh/id_rsa 2>/dev/null || echo 'Could not change SSH key ownership';
+        node dist/server.js
+      "
     # Required for network operations (ping, WoL)
     cap_add:
       - NET_RAW
       - NET_ADMIN
-    # Use host network for Wake-on-LAN to work properly
-    network_mode: host
+    # Use privileged mode for network access
+    privileged: true
+    networks:
+      - spark-network
+
+networks:
+  spark-network:
+    driver: bridge

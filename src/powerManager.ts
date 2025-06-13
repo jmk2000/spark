@@ -10,6 +10,8 @@ export interface ServerConfig {
   mac: string;
   sshPort: number;
   httpPort: number;
+  sshUsername?: string;
+  sshKeyPath?: string;
 }
 
 export interface PowerResult {
@@ -28,7 +30,7 @@ export class PowerManager {
     return new Promise((resolve) => {
       this.logger.info(`SPARK sending WoL packet to ${this.config.mac}`);
       
-      wol.wake(this.config.mac, (error) => {
+      wol.wake(this.config.mac, (error: any) => {
         const timestamp = new Date().toISOString();
         
         if (error) {
@@ -56,10 +58,15 @@ export class PowerManager {
     try {
       this.logger.info(`SPARK attempting to put server ${this.config.ip} to sleep`);
       
-      // Try SSH command first (requires SSH key authentication or password-less sudo)
-      const sshCommand = `ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -p ${this.config.sshPort} user@${this.config.ip} "sudo systemctl suspend"`;
+      // Use environment variables for SSH configuration
+      const sshUsername = this.config.sshUsername || process.env.SSH_USERNAME || 'user';
+      const sshKeyPath = this.config.sshKeyPath || '/app/.ssh/id_rsa';
+      
+      // SSH command with proper key and user
+      const sshCommand = `ssh -i ${sshKeyPath} -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/app/.ssh/known_hosts -p ${this.config.sshPort} ${sshUsername}@${this.config.ip} "sudo systemctl suspend"`;
       
       try {
+        this.logger.info(`SPARK executing SSH command: ssh ${sshUsername}@${this.config.ip}`);
         await execAsync(sshCommand);
         this.logger.info('SPARK sleep command sent via SSH');
         return {
@@ -67,18 +74,16 @@ export class PowerManager {
           message: 'SPARK sleep command sent successfully via SSH',
           timestamp
         };
-      } catch (sshError) {
-        this.logger.warn('SPARK SSH sleep command failed, trying alternative methods');
+      } catch (sshError: any) {
+        this.logger.warn('SPARK SSH sleep command failed:', sshError.message);
         
-        // Alternative: Use wake-on-lan library's magic packet with sleep
-        // This is a placeholder - in reality you'd need proper authentication
         return {
           success: false,
-          message: 'SPARK sleep command failed. SSH access required for remote sleep functionality.',
+          message: `SPARK sleep command failed. SSH error: ${sshError.message}. Please check SSH key authentication and sudo permissions.`,
           timestamp
         };
       }
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error('SPARK failed to put server to sleep:', error);
       return {
         success: false,
