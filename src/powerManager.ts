@@ -10,8 +10,6 @@ export interface ServerConfig {
   mac: string;
   sshPort: number;
   httpPort: number;
-  sshUsername?: string;
-  sshKeyPath?: string;
 }
 
 export interface PowerResult {
@@ -30,7 +28,7 @@ export class PowerManager {
     return new Promise((resolve) => {
       this.logger.info(`SPARK sending WoL packet to ${this.config.mac}`);
       
-      wol.wake(this.config.mac, (error: any) => {
+      wol.wake(this.config.mac, (error) => {
         const timestamp = new Date().toISOString();
         
         if (error) {
@@ -54,40 +52,77 @@ export class PowerManager {
 
   async sleepServer(): Promise<PowerResult> {
     const timestamp = new Date().toISOString();
-    
+    const username = process.env.SSH_USERNAME || 'spark'; // Default username
+    const sshBaseCommand = `ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes -p ${this.config.sshPort} ${username}@${this.config.ip}`;
+
     try {
-      this.logger.info(`SPARK attempting to put server ${this.config.ip} to sleep`);
+      this.logger.info(`SPARK attempting to put server ${this.config.ip} to sleep using systemctl suspend`);
+
+      // Step 1: Dynamically get the primary network interface name from the target server.
+      this.logger.info(`SPARK: Fetching network interface from target server...`);
+      const getInterfaceCommand = `ip -o -4 route show to default | awk '{print $5}'`;
+      const { stdout: interfaceName } = await execAsync(`${sshBaseCommand} "${getInterfaceCommand}"`);
+      const networkInterface = interfaceName.trim();
+
+      if (!networkInterface) {
+          throw new Error('Could not determine primary network interface on the target server.');
+      }
+      this.logger.info(`SPARK: Detected network interface: ${networkInterface}`);
       
-      // Use environment variables for SSH configuration
-      const sshUsername = this.config.sshUsername || process.env.SSH_USERNAME || 'user';
-      const sshKeyPath = this.config.sshKeyPath || '/app/.ssh/id_rsa';
+      // Step 2: Define the single, reliable sleep command.
+      // This command first ensures WoL is enabled on the interface, then suspends the system.
+      const sleepCommand = `sudo ethtool -s ${networkInterface} wol g && sudo systemctl suspend`;
       
-      // SSH command with proper key and user
-      const sshCommand = `ssh -i ${sshKeyPath} -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/app/.ssh/known_hosts -p ${this.config.sshPort} ${sshUsername}@${this.config.ip} "sudo systemctl suspend"`;
+      this.logger.info(`SPARK: Executing sleep command: "${sleepCommand}"`);
       
       try {
-        this.logger.info(`SPARK executing SSH command: ssh ${sshUsername}@${this.config.ip}`);
-        await execAsync(sshCommand);
-        this.logger.info('SPARK sleep command sent via SSH');
-        return {
-          success: true,
-          message: 'SPARK sleep command sent successfully via SSH',
-          timestamp
-        };
-      } catch (sshError: any) {
-        this.logger.warn('SPARK SSH sleep command failed:', sshError.message);
+        await execAsync(`${sshBaseCommand} "${sleepCommand}"`);
         
-        return {
-          success: false,
-          message: `SPARK sleep command failed. SSH error: ${sshError.message}. Please check SSH key authentication and sudo permissions.`,
-          timestamp
-        };
+        // After sending the suspend command, we expect the host to become unreachable.
+        // We'll wait a few seconds and then check.
+        await new Promise(resolve => setTimeout(resolve, 5000));
+
+        const isStillOnline = await this.isServerReachable();
+        if (!isStillOnline) {
+          this.logger.info('SPARK sleep command successful. Server is now suspended.');
+          return {
+            success: true,
+            message: 'SPARK sleep command sent successfully. Server has been suspended.',
+            timestamp
+          };
+        } else {
+          this.logger.warn('SPARK sleep command was sent, but the server is still online. Check BIOS/WoL settings and sudo permissions.');
+          return {
+            success: false,
+            message: 'SPARK sleep command sent, but server is still responding. Check BIOS Wake-on-LAN settings and ensure user has passwordless sudo for ethtool and systemctl.',
+            timestamp
+          };
+        }
+
+      } catch (sshError: any) {
+         // An SSH error during suspend is often expected as the connection drops.
+         // We can treat certain errors as a sign of success.
+        if (
+            sshError.message.includes('Connection closed') ||
+            sshError.message.includes('Connection reset')
+        ) {
+            this.logger.info('SPARK sleep successful - SSH connection dropped as expected during suspend.');
+            return {
+                success: true,
+                message: 'SPARK sleep command sent successfully. Server has been suspended.',
+                timestamp
+            };
+        }
+        // If it's a different error, log it as a failure.
+        this.logger.error(`SPARK: SSH command failed unexpectedly: ${sshError.message}`);
+        throw sshError; // Re-throw to be caught by the outer catch block.
       }
-    } catch (error: any) {
-      this.logger.error('SPARK failed to put server to sleep:', error);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+      this.logger.error(`SPARK failed to put server to sleep: ${errorMessage}`);
       return {
         success: false,
-        message: `SPARK failed to put server to sleep: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        message: `SPARK failed to put server to sleep: ${errorMessage}`,
         timestamp
       };
     }
@@ -95,14 +130,9 @@ export class PowerManager {
 
   async isServerReachable(): Promise<boolean> {
     try {
-      // Test both ping and HTTP service
+      // A simple ping is sufficient to check if the host is responsive.
       const pingCommand = `ping -c 1 -W 3 ${this.config.ip}`;
       await execAsync(pingCommand);
-      
-      // Test if Ollama service is responding
-      const curlCommand = `curl -s --connect-timeout 5 http://${this.config.ip}:${this.config.httpPort}/api/tags`;
-      await execAsync(curlCommand);
-      
       return true;
     } catch {
       return false;
@@ -122,29 +152,31 @@ export class PowerManager {
       ollama: false
     };
 
-    // Test ping
     try {
       await execAsync(`ping -c 1 -W 3 ${this.config.ip}`);
       results.ping = true;
     } catch {}
 
-    // Test SSH
-    try {
-      await execAsync(`nc -z -w3 ${this.config.ip} ${this.config.sshPort}`);
-      results.ssh = true;
-    } catch {}
+    if (results.ping) {
+        try {
+          await execAsync(`nc -z -w3 ${this.config.ip} ${this.config.sshPort}`);
+          results.ssh = true;
+        } catch {}
 
-    // Test HTTP
-    try {
-      await execAsync(`nc -z -w3 ${this.config.ip} ${this.config.httpPort}`);
-      results.http = true;
-    } catch {}
+        try {
+          await execAsync(`nc -z -w3 ${this.config.ip} ${this.config.httpPort}`);
+          results.http = true;
+        } catch {}
 
-    // Test Ollama API
-    try {
-      await execAsync(`curl -s --connect-timeout 3 http://${this.config.ip}:${this.config.httpPort}/api/tags`);
-      results.ollama = true;
-    } catch {}
+        if (results.http) {
+            try {
+              // Check if the Ollama API is responding with a valid JSON structure
+              const { stdout } = await execAsync(`curl -s --connect-timeout 3 http://${this.config.ip}:${this.config.httpPort}/api/tags`);
+              JSON.parse(stdout);
+              results.ollama = true;
+            } catch {}
+        }
+    }
 
     return results;
   }
