@@ -16,7 +16,12 @@ services:
       - TARGET_SERVER_HTTP_PORT=${TARGET_SERVER_HTTP_PORT:-11434}
       - PORT=${PORT:-3000}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      # --- GPU Auto-Sleep Settings (from .env) ---
+      # --- Performance Monitoring Debug ---
+      - ENABLE_PERFORMANCE_DEBUG=${ENABLE_PERFORMANCE_DEBUG:-false}
+      # --- Auto-Sleep Settings ---
+      - AUTO_SLEEP_ENABLED=${AUTO_SLEEP_ENABLED:-false}
+      - AUTO_SLEEP_MINUTES=${AUTO_SLEEP_MINUTES:-15}
+      - AUTO_SLEEP_MONITOR_GPU=${AUTO_SLEEP_MONITOR_GPU:-false}
       - AUTO_SLEEP_GPU_THRESHOLD=${AUTO_SLEEP_GPU_THRESHOLD:-5}
       - AUTO_SLEEP_IDLE_MINUTES=${AUTO_SLEEP_IDLE_MINUTES:-5}
     volumes:

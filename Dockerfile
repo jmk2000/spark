@@ -3,12 +3,14 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Install system dependencies for wake-on-lan
+# Install system dependencies for wake-on-lan and monitoring
 RUN apk add --no-cache \
     curl \
     iputils \
     net-tools \
-    openssh-client
+    openssh-client \
+    netcat-openbsd \
+    bash
 
 # Copy package files and install ALL dependencies
 COPY package*.json ./

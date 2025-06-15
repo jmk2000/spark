@@ -25,60 +25,108 @@ export class PowerManager {
   ) {}
 
   async wakeServer(): Promise<PowerResult> {
-    return new Promise((resolve) => {
+    const timestamp = new Date().toISOString();
+    
+    try {
       this.logger.info(`SPARK sending WoL packet to MAC address ${this.config.mac}.`);
 
-      try {
-        const macBytes = this.config.mac.split(/[:-]/).map(hex => parseInt(hex, 16));
-        if (macBytes.some(isNaN) || macBytes.length !== 6) {
-            throw new Error('Invalid MAC address format.');
-        }
-
-        const magicPacket = Buffer.concat([
-          Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
-          ...Array(16).fill(null).map(() => Buffer.from(macBytes))
-        ]);
-
-        const socket = dgram.createSocket('udp4');
-        socket.on('listening', () => {
-          socket.setBroadcast(true);
-          const broadcastAddress = '255.255.255.255'; 
-          const port = 9;
-
-          this.logger.info(`Sending WoL packet to broadcast address: ${broadcastAddress}:${port}`);
-          socket.send(magicPacket, port, broadcastAddress, (err) => {
-            socket.close();
-            if (err) { throw err; }
-            this.logger.info('SPARK WoL packet sent successfully.');
-            resolve({
-              success: true,
-              message: 'Wake-on-LAN packet sent successfully. The server should wake up shortly.',
-              timestamp: new Date().toISOString()
-            });
-          });
-        });
-
-        socket.on('error', (err) => {
-            this.logger.error('Socket error while sending WoL packet:', err);
-            socket.close();
-            resolve({
-                success: false,
-                message: `Failed to send Wake-on-LAN packet: ${err.message}`,
-                timestamp: new Date().toISOString()
-            });
-        });
-
-        socket.bind();
-
-      } catch (error: any) {
-        this.logger.error('SPARK failed to create WoL packet:', error);
-        resolve({
-            success: false,
-            message: `Failed to create Wake-on-LAN packet: ${error.message}`,
-            timestamp: new Date().toISOString()
-        });
+      // Validate and normalize MAC address
+      const macAddr = this.config.mac.replace(/[:-]/g, '').toLowerCase();
+      if (!/^[0-9a-f]{12}$/i.test(macAddr)) {
+        throw new Error('Invalid MAC address format.');
       }
+
+      // Convert MAC to bytes
+      const macBytes = [];
+      for (let i = 0; i < 12; i += 2) {
+        macBytes.push(parseInt(macAddr.substr(i, 2), 16));
+      }
+
+      // Create magic packet (6 bytes of 0xFF + 16 repetitions of MAC)
+      const magicPacket = Buffer.concat([
+        Buffer.from([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+        ...Array(16).fill(null).map(() => Buffer.from(macBytes))
+      ]);
+
+      // Try multiple methods to send WoL packet
+      const results = await Promise.allSettled([
+        this.sendWoLPacket(magicPacket, '255.255.255.255', 9),
+        this.sendWoLPacket(magicPacket, this.getBroadcastAddress(), 9),
+        this.sendWoLPacket(magicPacket, this.config.ip, 9),
+        this.sendWoLPacket(magicPacket, '255.255.255.255', 7)
+      ]);
+
+      const successCount = results.filter(r => r.status === 'fulfilled').length;
+      
+      if (successCount > 0) {
+        this.logger.info(`SPARK WoL packet sent successfully (${successCount}/4 methods succeeded).`);
+        return {
+          success: true,
+          message: `Wake-on-LAN packet sent successfully via ${successCount} method(s). The server should wake up shortly.`,
+          timestamp
+        };
+      } else {
+        throw new Error('All WoL sending methods failed');
+      }
+
+    } catch (error: any) {
+      this.logger.error('SPARK failed to send WoL packet:', error);
+      return {
+        success: false,
+        message: `Failed to send Wake-on-LAN packet: ${error.message}`,
+        timestamp
+      };
+    }
+  }
+
+  private sendWoLPacket(magicPacket: Buffer, address: string, port: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const socket = dgram.createSocket('udp4');
+      
+      const cleanup = () => {
+        try { socket.close(); } catch (e) {}
+      };
+
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Timeout sending to ${address}:${port}`));
+      }, 5000);
+
+      socket.on('error', (err) => {
+        clearTimeout(timeout);
+        cleanup();
+        reject(err);
+      });
+
+      socket.on('listening', () => {
+        try {
+          socket.setBroadcast(true);
+          socket.send(magicPacket, port, address, (err) => {
+            clearTimeout(timeout);
+            cleanup();
+            if (err) {
+              reject(err);
+            } else {
+              this.logger.debug(`WoL packet sent to ${address}:${port}`);
+              resolve();
+            }
+          });
+        } catch (err) {
+          clearTimeout(timeout);
+          cleanup();
+          reject(err);
+        }
+      });
+
+      socket.bind();
     });
+  }
+
+  private getBroadcastAddress(): string {
+    // Calculate broadcast address from server IP
+    const ip = this.config.ip.split('.').map(Number);
+    // Assume /24 network for simplicity
+    return `${ip[0]}.${ip[1]}.${ip[2]}.255`;
   }
 
   async sleepServer(): Promise<PowerResult> {
@@ -89,28 +137,48 @@ export class PowerManager {
 
     try {
       this.logger.info(`SPARK attempting to put server ${this.config.ip} to sleep.`);
-      const getInterfaceCommand = "ip -o -4 route show to default | grep -o 'dev [^ ]*' | cut -d' ' -f2";
+      
+      // Get the primary network interface
+      const getInterfaceCommand = "ip route | grep default | head -1 | sed 's/.*dev \\([^ ]*\\).*/\\1/'";
       const { stdout: interfaceName } = await execAsync(`${sshBaseCommand} "${getInterfaceCommand}"`);
       const networkInterface = interfaceName.trim();
 
       if (!networkInterface) {
-          throw new Error('Could not determine primary network interface on the target server.');
+        throw new Error('Could not determine primary network interface on the target server.');
       }
+      
       this.logger.info(`SPARK: Detected network interface: ${networkInterface}`);
       
+      // Enable WoL and suspend
       const sleepCommand = `sudo ethtool -s ${networkInterface} wol g && sudo systemctl suspend`;
       this.logger.info(`SPARK: Executing sleep command: "${sleepCommand}"`);
       
       await execAsync(`${sshBaseCommand} "${sleepCommand}"`);
-      return { success: true, message: 'Sleep command sent successfully. The server should suspend shortly.', timestamp };
+      return { 
+        success: true, 
+        message: 'Sleep command sent successfully. The server should suspend shortly.', 
+        timestamp 
+      };
       
     } catch (error: any) {
-      if (error.message.includes('Connection closed') || error.message.includes('Connection reset')) {
+      // SSH connection dropping is expected when the server suspends
+      if (error.message.includes('Connection closed') || 
+          error.message.includes('Connection reset') ||
+          error.message.includes('broken pipe')) {
         this.logger.info('SPARK sleep successful - SSH connection dropped as expected.');
-        return { success: true, message: 'Sleep command sent successfully. The server should suspend shortly.', timestamp };
+        return { 
+          success: true, 
+          message: 'Sleep command sent successfully. The server should suspend shortly.', 
+          timestamp 
+        };
       }
+      
       this.logger.error(`SPARK failed to put server to sleep: ${error.message}`);
-      return { success: false, message: `Failed to put server to sleep: ${error.message}`, timestamp };
+      return { 
+        success: false, 
+        message: `Failed to put server to sleep: ${error.message}`, 
+        timestamp 
+      };
     }
   }
 }

@@ -6,135 +6,792 @@
     <title>SPARK - Server Power Automated Remote Kontrol</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <style>
+        :root {
+            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --secondary-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            --success-gradient: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            --danger-gradient: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            --card-bg: rgba(255, 255, 255, 0.95);
+            --glass-bg: rgba(255, 255, 255, 0.1);
+            --text-primary: #2d3748;
+            --text-secondary: #718096;
+            --border-radius: 16px;
+            --shadow-soft: 0 10px 25px rgba(0, 0, 0, 0.1);
+            --shadow-hover: 0 20px 40px rgba(0, 0, 0, 0.15);
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; color: #333; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .header { text-align: center; margin-bottom: 40px; color: white; }
-        .header h1 { font-size: 2.5rem; margin-bottom: 10px; text-shadow: 0 2px 4px rgba(0,0,0,0.3); }
-        .header .subtitle { font-size: 1.1rem; opacity: 0.9; margin-bottom: 5px; }
-        .header .acronym { font-size: 0.9rem; opacity: 0.8; font-style: italic; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; }
-        .card { background: rgba(255, 255, 255, 0.9); border-radius: 12px; padding: 25px; box-shadow: 0 8px 32px rgba(0,0,0,0.1); backdrop-filter: blur(10px); transition: transform 0.3s ease, box-shadow 0.3s ease; }
-        .card:hover { transform: translateY(-5px); box-shadow: 0 12px 40px rgba(0,0,0,0.15); }
-        .card-title { font-size: 1.4rem; font-weight: 600; margin-bottom: 15px; color: #2d3748; display: flex; align-items: center; gap: 10px; }
-        .status-indicator { width: 12px; height: 12px; border-radius: 50%; display: inline-block; animation: pulse 2s infinite; }
-        .status-online { background-color: #48bb78; }
-        .status-offline { background-color: #f56565; }
-        .button { background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); color: white; border: none; padding: 12px 24px; border-radius: 8px; font-size: 1rem; font-weight: 500; cursor: pointer; transition: all 0.3s ease; margin: 5px; box-shadow: 0 4px 14px rgba(0,0,0,0.1); }
-        .button:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.15); }
-        .button:active { transform: translateY(0); }
-        .button.danger { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); }
-        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin: 15px 0; }
-        .info-item { background: #f7fafc; padding: 12px; border-radius: 6px; border-left: 4px solid #4f46e5; }
-        .info-label { font-size: 0.85rem; color: #718096; margin-bottom: 4px; }
-        .info-value { font-size: 1.1rem; font-weight: 600; color: #2d3748; word-break: break-all; }
-        .service-status { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #e2e8f0; }
-        .service-status:last-child { border-bottom: none; }
-        .service-name { font-weight: 500; }
-        .service-badge { padding: 4px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; }
-        .badge-online { background-color: #c6f6d5; color: #22543d; }
-        .badge-offline { background-color: #fed7d7; color: #742a2a; }
-        .performance-bar { background: #e2e8f0; height: 8px; border-radius: 4px; overflow: hidden; margin-top: 5px; }
-        .performance-fill { height: 100%; transition: width 0.5s ease; border-radius: 4px; }
-        .performance-cpu { background: linear-gradient(90deg, #4ade80, #22c55e); }
-        .performance-memory { background: linear-gradient(90deg, #60a5fa, #3b82f6); }
-        .performance-disk { background: linear-gradient(90deg, #a78bfa, #8b5cf6); }
-        .performance-gpu { background: linear-gradient(90deg, #81e6d9, #38b2ac); }
-        .logs-container { background: #1a202c; color: #e2e8f0; padding: 20px; border-radius: 8px; font-family: 'Monaco', 'Menlo', monospace; font-size: 0.9rem; max-height: 300px; overflow-y: auto; margin-top: 15px; }
-        .full-width { grid-column: 1 / -1; }
-        .config-item { padding: 10px 0; border-bottom: 1px solid #e2e8f0; }
-        .config-item:last-child { border-bottom: none; }
-        .config-label { display: flex; justify-content: space-between; align-items: center; font-weight: 500; cursor: pointer; }
-        .sub-config { margin-left: 20px; margin-top: 10px; border-left: 2px solid #cbd5e0; padding-left: 15px; }
-        .hidden { display: none; }
-        .slider-container { display: flex; align-items: center; gap: 15px; margin-top: 8px; }
-        input[type="range"] { flex-grow: 1; cursor: pointer; }
-        #timeoutValue { font-weight: 600; min-width: 90px; text-align: right; }
-        .countdown-text { text-align: center; font-weight: 600; color: #48bb78; margin-top: 10px; font-size: 1.1rem; }
-        #actionMessage { margin-top: 15px; padding: 10px; border-radius: 6px; display: none; text-align: center; }
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+            background: var(--primary-gradient);
+            min-height: 100vh; 
+            color: var(--text-primary);
+            background-attachment: fixed;
+        }
+
+        .particles {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            animation: float 6s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0px) rotate(0deg); opacity: 0.3; }
+            50% { transform: translateY(-20px) rotate(180deg); opacity: 0.8; }
+        }
+
+        .container { 
+            max-width: 1400px; 
+            margin: 0 auto; 
+            padding: 20px; 
+            position: relative;
+        }
+
+        .header { 
+            text-align: center; 
+            margin-bottom: 40px; 
+            color: white; 
+            position: relative;
+        }
+
+        .header h1 { 
+            font-size: clamp(2rem, 4vw, 3.5rem); 
+            margin-bottom: 10px; 
+            text-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            background: linear-gradient(45deg, #fff, #f0f8ff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: glow 2s ease-in-out infinite alternate;
+        }
+
+        @keyframes glow {
+            from { filter: drop-shadow(0 0 10px rgba(255,255,255,0.3)); }
+            to { filter: drop-shadow(0 0 20px rgba(255,255,255,0.6)); }
+        }
+
+        .header .subtitle { 
+            font-size: 1.2rem; 
+            opacity: 0.9; 
+            margin-bottom: 5px; 
+            font-weight: 300;
+        }
+
+        .header .acronym { 
+            font-size: 1rem; 
+            opacity: 0.8; 
+            font-style: italic; 
+            font-weight: 300;
+        }
+
+        .grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); 
+            gap: 24px; 
+        }
+
+        .card { 
+            background: var(--card-bg); 
+            border-radius: var(--border-radius); 
+            padding: 30px; 
+            box-shadow: var(--shadow-soft); 
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); 
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+            transition: left 0.6s;
+        }
+
+        .card:hover::before {
+            left: 100%;
+        }
+
+        .card:hover { 
+            transform: translateY(-8px) scale(1.02); 
+            box-shadow: var(--shadow-hover); 
+        }
+
+        .card-title { 
+            font-size: 1.5rem; 
+            font-weight: 700; 
+            margin-bottom: 20px; 
+            color: var(--text-primary); 
+            display: flex; 
+            align-items: center; 
+            gap: 12px; 
+        }
+
+        .status-indicator { 
+            width: 14px; 
+            height: 14px; 
+            border-radius: 50%; 
+            display: inline-block; 
+            position: relative;
+            box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.3);
+        }
+
+        .status-indicator::after {
+            content: '';
+            position: absolute;
+            top: -3px;
+            left: -3px;
+            right: -3px;
+            bottom: -3px;
+            border-radius: 50%;
+            border: 2px solid;
+            animation: pulse-ring 2s infinite;
+        }
+
+        .status-online { 
+            background: linear-gradient(135deg, #48bb78, #38a169); 
+        }
+
+        .status-online::after {
+            border-color: #48bb78;
+        }
+
+        .status-offline { 
+            background: linear-gradient(135deg, #f56565, #e53e3e); 
+        }
+
+        .status-offline::after {
+            border-color: #f56565;
+        }
+
+        @keyframes pulse-ring {
+            0% { transform: scale(0.8); opacity: 1; }
+            100% { transform: scale(1.4); opacity: 0; }
+        }
+
+        .button { 
+            background: #22c55e; /* Solid green */
+            color: white; 
+            border: none; 
+            padding: 14px 28px; 
+            border-radius: 12px; 
+            font-size: 1rem; 
+            font-weight: 600; 
+            cursor: pointer; 
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); 
+            margin: 6px; 
+            box-shadow: 0 6px 20px rgba(0,0,0,0.1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .button::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: left 0.5s;
+        }
+
+        .button:hover::before {
+            left: 100%;
+        }
+
+        .button:hover { 
+            transform: translateY(-3px); 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            background: #16a34a; /* Darker green on hover */
+        }
+
+        .button:active { 
+            transform: translateY(-1px); 
+        }
+
+        .button.danger { 
+            background: #ef4444; /* Solid red */
+        }
+
+        .button.danger:hover {
+            background: #dc2626; /* Darker red on hover */
+        }
+
+        .button.purple { 
+            background: #8b5cf6; /* Solid purple */
+        }
+
+        .button.purple:hover {
+            background: #7c3aed; /* Darker purple on hover */
+        }
+
+        .info-grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); 
+            gap: 16px; 
+            margin: 20px 0; 
+        }
+
+        .info-item { 
+            background: linear-gradient(135deg, #f7fafc, #edf2f7); 
+            padding: 12px; 
+            border-radius: 12px; 
+            border-left: 4px solid;
+            border-image: var(--success-gradient) 1;
+            transition: all 0.3s ease;
+            position: relative;
+            min-height: 70px;
+        }
+
+        .info-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+        }
+
+        .info-label { 
+            font-size: 0.8rem; 
+            color: var(--text-secondary); 
+            margin-bottom: 4px; 
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .info-value { 
+            font-size: 0.95rem; 
+            font-weight: 700; 
+            color: var(--text-primary); 
+            word-break: break-all;
+            line-height: 1.2;
+        }
+
+        .service-status { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            padding: 12px 0; 
+            border-bottom: 1px solid rgba(226, 232, 240, 0.5); 
+            transition: all 0.3s ease;
+        }
+
+        .service-status:hover {
+            background: rgba(247, 250, 252, 0.5);
+            border-radius: 8px;
+            padding-left: 8px;
+            padding-right: 8px;
+        }
+
+        .service-status:last-child { 
+            border-bottom: none; 
+        }
+
+        .service-name { 
+            font-weight: 600; 
+            color: var(--text-primary);
+        }
+
+        .service-badge { 
+            padding: 6px 12px; 
+            border-radius: 20px; 
+            font-size: 0.8rem; 
+            font-weight: 700; 
+            text-transform: uppercase; 
+            letter-spacing: 0.5px;
+            transition: all 0.3s ease;
+        }
+
+        .badge-online { 
+            background: linear-gradient(135deg, #c6f6d5, #9ae6b4); 
+            color: #22543d; 
+            box-shadow: 0 2px 8px rgba(72, 187, 120, 0.3);
+        }
+
+        .badge-offline { 
+            background: linear-gradient(135deg, #fed7d7, #feb2b2); 
+            color: #742a2a; 
+            box-shadow: 0 2px 8px rgba(245, 101, 101, 0.3);
+        }
+
+        .performance-bar { 
+            background: linear-gradient(90deg, #e2e8f0, #cbd5e0); 
+            height: 10px; 
+            border-radius: 6px; 
+            overflow: hidden; 
+            margin-top: 8px; 
+            position: relative;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .performance-fill { 
+            height: 100%; 
+            transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1); 
+            border-radius: 6px; 
+            position: relative;
+        }
+
+        .performance-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .performance-cpu { 
+            background: linear-gradient(90deg, #4ade80, #22c55e, #16a34a); 
+        }
+
+        .performance-memory { 
+            background: linear-gradient(90deg, #60a5fa, #3b82f6, #2563eb); 
+        }
+
+        .performance-disk { 
+            background: linear-gradient(90deg, #a78bfa, #8b5cf6, #7c3aed); 
+        }
+
+        .performance-gpu { 
+            background: linear-gradient(90deg, #06d6a0, #1b9aaa, #ef476f); 
+        }
+
+        .performance-vram { 
+            background: linear-gradient(90deg, #f59e0b, #f97316, #dc2626); 
+        }
+
+        .logs-container { 
+            background: linear-gradient(135deg, #1a202c, #2d3748); 
+            color: #e2e8f0; 
+            padding: 24px; 
+            border-radius: 12px; 
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace; 
+            font-size: 0.9rem; 
+            max-height: 350px; 
+            overflow-y: auto; 
+            margin-top: 16px; 
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: inset 0 2px 8px rgba(0,0,0,0.3);
+        }
+
+        .logs-container::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .logs-container::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .logs-container::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+        } translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .full-width { 
+            grid-column: 1 / -1; 
+            width: 100%;
+        }
+
+        .config-item { 
+            padding: 16px 0; 
+            border-bottom: 1px solid rgba(226, 232, 240, 0.5); 
+            transition: all 0.3s ease;
+        }
+
+        .config-item:hover {
+            background: rgba(247, 250, 252, 0.5);
+            border-radius: 8px;
+            padding-left: 12px;
+            padding-right: 12px;
+        }
+
+        .config-item:last-child { 
+            border-bottom: none; 
+        }
+
+        .config-label { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            font-weight: 600; 
+            cursor: pointer; 
+            color: var(--text-primary);
+        }
+
+        .sub-config { 
+            margin-left: 24px; 
+            margin-top: 12px; 
+            border-left: 3px solid;
+            border-image: var(--success-gradient) 1;
+            padding-left: 16px; 
+            background: rgba(247, 250, 252, 0.3);
+            border-radius: 0 8px 8px 0;
+        }
+
+        .hidden { 
+            display: none; 
+        }
+
+        .slider-container { 
+            display: flex; 
+            align-items: center; 
+            gap: 16px; 
+            margin-top: 12px; 
+        }
+
+        input[type="range"] { 
+            flex-grow: 1; 
+            cursor: pointer; 
+            height: 6px;
+            border-radius: 3px;
+            background: linear-gradient(90deg, #e2e8f0, #cbd5e0);
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--success-gradient);
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }
+
+        input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            accent-color: #667eea;
+            cursor: pointer;
+        }
+
+        #timeoutValue { 
+            font-weight: 700; 
+            min-width: 100px; 
+            text-align: right; 
+            color: var(--text-primary);
+            background: var(--glass-bg);
+            padding: 8px 12px;
+            border-radius: 8px;
+            backdrop-filter: blur(10px);
+        }
+
+        .countdown-text { 
+            text-align: center; 
+            font-weight: 700; 
+            background: var(--success-gradient);
+            color: white;
+            margin-top: 16px; 
+            font-size: 1.2rem; 
+            padding: 12px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        #actionMessage { 
+            margin-top: 16px; 
+            padding: 16px; 
+            border-radius: 12px; 
+            display: none; 
+            text-align: center; 
+            font-weight: 600;
+            animation: slideInDown 0.5s ease;
+        }
+
+        @keyframes slideInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .container { padding: 16px; }
+            .grid { grid-template-columns: 1fr; gap: 16px; }
+            .card { padding: 20px; }
+            .header h1 { font-size: 2.5rem; }
+            .info-grid { grid-template-columns: 1fr; }
+        }
+
+        /* Dark mode support */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --card-bg: rgba(45, 55, 72, 0.95);
+                --text-primary: #f7fafc;
+                --text-secondary: #a0aec0;
+            }
+        }
+
+        /* Loading states */
+        .loading {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .loading::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            animation: loading 1.5s infinite;
+        }
+
+        @keyframes loading {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
     </style>
 </head>
 <body>
+    <!-- Animated background particles -->
+    <div class="particles" id="particles"></div>
+
     <div class="container">
         <div class="header">
             <h1>⚡ SPARK</h1>
             <p class="subtitle">Server Power Automated Remote Kontrol</p>
-            <p class="acronym">Monitor and control your server's power state</p>
+            <p class="acronym">Monitor and control your server's power state with style</p>
         </div>
+        
         <div class="grid">
             <div class="card">
-                <div class="card-title"><span class="status-indicator" id="statusIndicator"></span>Server Status</div>
+                <div class="card-title">
+                    <span class="status-indicator" id="statusIndicator"></span>
+                    Server Status
+                </div>
                 <div class="info-grid">
-                    <div class="info-item"><div class="info-label">Status</div><div class="info-value" id="serverStatus">Checking...</div></div>
-                    <div class="info-item"><div class="info-label">Last Seen</div><div class="info-value" id="lastSeen">-</div></div>
-                    <div class="info-item"><div class="info-label">Response Time</div><div class="info-value" id="responseTime">-</div></div>
-                    <div class="info-item"><div class="info-label">Server IP</div><div class="info-value" id="serverIP">-</div></div>
+                    <div class="info-item">
+                        <div class="info-label">Status</div>
+                        <div class="info-value" id="serverStatus">Checking...</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Last Seen</div>
+                        <div class="info-value" id="lastSeen">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Response Time</div>
+                        <div class="info-value" id="responseTime">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Server IP</div>
+                        <div class="info-value" id="serverIP">-</div>
+                    </div>
                 </div>
             </div>
+
             <div class="card">
                 <div class="card-title">⚡ Power Controls</div>
                 <div style="text-align: center;">
-                    <button class="button" id="wakeBtn" onclick="wakeServer()">Wake Server</button>
-                    <button class="button danger" id="sleepBtn" onclick="sleepServer()">Sleep Server</button>
-                    <button class="button" onclick="refreshStatus()">Refresh Status</button>
+                    <button class="button" id="wakeBtn" onclick="wakeServer()">
+                        <span>🌅 Wake Server</span>
+                    </button>
+                    <button class="button danger" id="sleepBtn" onclick="sleepServer()">
+                        <span>💤 Sleep Server</span>
+                    </button>
+                    <button class="button purple" onclick="refreshStatus()">
+                        <span>🔄 Refresh Status</span>
+                    </button>
                 </div>
                 <div id="actionMessage"></div>
             </div>
+
             <div class="card">
                 <div class="card-title">🔌 Idle Shutdown</div>
-                <div class="config-item"><label class="config-label" for="idleEnableCheckbox"><span>Enable Idle Shutdown</span><input type="checkbox" id="idleEnableCheckbox"></label></div>
+                <div class="config-item">
+                    <label class="config-label" for="idleEnableCheckbox">
+                        <span>Enable Idle Shutdown</span>
+                        <input type="checkbox" id="idleEnableCheckbox">
+                    </label>
+                </div>
                 <div id="idleOptionsContainer" class="hidden">
-                    <div class="config-item sub-config"><label class="config-label" for="gpuEnableCheckbox"><span>Include GPU Utilization</span><input type="checkbox" id="gpuEnableCheckbox"></label></div>
                     <div class="config-item sub-config">
-                        <div class="config-label"><span>Idle Duration (Requests)</span></div>
-                        <div class="slider-container"><input type="range" id="timeoutSlider" min="5" max="60" step="5" value="15"><span id="timeoutValue">15 minutes</span></div>
+                        <label class="config-label" for="gpuEnableCheckbox">
+                            <span>Include GPU Utilization</span>
+                            <input type="checkbox" id="gpuEnableCheckbox">
+                        </label>
+                    </div>
+                    <div class="config-item sub-config">
+                        <div class="config-label">
+                            <span>Idle Duration (Requests)</span>
+                        </div>
+                        <div class="slider-container">
+                            <input type="range" id="timeoutSlider" min="5" max="60" step="5" value="15">
+                            <span id="timeoutValue">15 minutes</span>
+                        </div>
                     </div>
                 </div>
                 <div id="idleCountdownContainer" class="countdown-text" style="display: none;"></div>
             </div>
+
             <div class="card">
                 <div class="card-title">🔧 Services Status</div>
                 <div id="servicesStatus">
-                    <div class="service-status"><span class="service-name">Ping</span><span class="service-badge" id="pingStatus">Unknown</span></div>
-                    <div class="service-status"><span class="service-name">SSH</span><span class="service-badge" id="sshStatus">Unknown</span></div>
-                    <div class="service-status"><span class="service-name">Target Port</span><span class="service-badge" id="httpStatus">Unknown</span></div>
-                    <div class="service-status"><span class="service-name">Target HTTP Service</span><span class="service-badge" id="targetHttpStatus">Unknown</span></div>
+                    <div class="service-status">
+                        <span class="service-name">🏓 Ping</span>
+                        <span class="service-badge" id="pingStatus">Unknown</span>
+                    </div>
+                    <div class="service-status">
+                        <span class="service-name">🔐 SSH</span>
+                        <span class="service-badge" id="sshStatus">Unknown</span>
+                    </div>
+                    <div class="service-status">
+                        <span class="service-name">🌐 Target Port</span>
+                        <span class="service-badge" id="httpStatus">Unknown</span>
+                    </div>
+                    <div class="service-status">
+                        <span class="service-name">🎯 Target HTTP Service</span>
+                        <span class="service-badge" id="targetHttpStatus">Unknown</span>
+                    </div>
                 </div>
             </div>
+
             <div class="card">
                 <div class="card-title">📊 Performance Metrics</div>
                 <div id="performanceMetrics">
-                    <div class="info-item"><div class="info-label">CPU</div><div class="info-value" id="cpuUsage">N/A</div><div class="performance-bar"><div class="performance-fill performance-cpu" id="cpuBar"></div></div></div>
-                    <div class="info-item"><div class="info-label">Memory</div><div class="info-value" id="memoryUsage">N/A</div><div class="performance-bar"><div class="performance-fill performance-memory" id="memoryBar"></div></div></div>
-                    <div class="info-item"><div class="info-label">Disk</div><div class="info-value" id="diskUsage">N/A</div><div class="performance-bar"><div class="performance-fill performance-disk" id="diskBar"></div></div></div>
-                    <div class="info-item"><div class="info-label">GPU</div><div class="info-value" id="gpuUsage">N/A</div><div class="performance-bar"><div class="performance-fill performance-gpu" id="gpuBar"></div></div></div>
+                    <div class="info-item">
+                        <div class="info-label">🖥️ CPU</div>
+                        <div class="info-value" id="cpuUsage">N/A</div>
+                        <div class="performance-bar">
+                            <div class="performance-fill performance-cpu" id="cpuBar"></div>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">🧠 Memory</div>
+                        <div class="info-value" id="memoryUsage">N/A</div>
+                        <div class="performance-bar">
+                            <div class="performance-fill performance-memory" id="memoryBar"></div>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">💽 Disk</div>
+                        <div class="info-value" id="diskUsage">N/A</div>
+                        <div class="performance-bar">
+                            <div class="performance-fill performance-disk" id="diskBar"></div>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">🎮 GPU</div>
+                        <div class="info-value" id="gpuUsage">N/A</div>
+                        <div class="performance-bar">
+                            <div class="performance-fill performance-gpu" id="gpuBar"></div>
+                        </div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">🎯 VRAM</div>
+                        <div class="info-value" id="vramUsage">N/A</div>
+                        <div class="performance-bar">
+                            <div class="performance-fill performance-vram" id="vramBar"></div>
+                        </div>
+                    </div>
                 </div>
             </div>
+
             <div class="card">
                 <div class="card-title">⚙️ SPARK Configuration</div>
                 <div class="info-grid">
-                    <div class="info-item"><div class="info-label">Target IP</div><div class="info-value" id="configIP">...</div></div>
-                    <div class="info-item"><div class="info-label">MAC Address</div><div class="info-value" id="configMAC">...</div></div>
-                    <div class="info-item"><div class="info-label">SSH Port</div><div class="info-value" id="configSSH">...</div></div>
-                    <div class="info-item"><div class="info-label">HTTP Port</div><div class="info-value" id="configHTTP">...</div></div>
+                    <div class="info-item">
+                        <div class="info-label">Target IP</div>
+                        <div class="info-value" id="configIP">...</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">MAC Address</div>
+                        <div class="info-value" id="configMAC" style="font-size: 0.85rem; line-height: 1.1;">...</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">SSH Port</div>
+                        <div class="info-value" id="configSSH">...</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">HTTP Port</div>
+                        <div class="info-value" id="configHTTP">...</div>
+                    </div>
                 </div>
             </div>
-            <div class="card full-width">
-                <div class="card-title">📋 System Logs</div>
-                <div class="logs-container" id="logsContainer"><div class="log-entry">Initializing...</div></div>
+        </div>
+
+        <!-- System Logs as a separate full-width section -->
+        <div class="card" style="margin-top: 24px;">
+            <div class="card-title">📋 System Logs</div>
+            <div class="logs-container" id="logsContainer">
+                <div class="log-entry">🚀 Initializing SPARK interface...</div>
             </div>
         </div>
     </div>
 
     <script>
+        // Create animated background particles
+        function createParticles() {
+            const particlesContainer = document.getElementById('particles');
+            const particleCount = 50;
+            
+            for (let i = 0; i < particleCount; i++) {
+                const particle = document.createElement('div');
+                particle.className = 'particle';
+                particle.style.left = Math.random() * 100 + '%';
+                particle.style.top = Math.random() * 100 + '%';
+                particle.style.animationDelay = Math.random() * 6 + 's';
+                particle.style.animationDuration = (3 + Math.random() * 3) + 's';
+                particlesContainer.appendChild(particle);
+            }
+        }
+
         const socket = io();
         const API_BASE_URL = window.location.origin;
 
-        document.addEventListener('DOMContentLoaded', initializeApp);
+        document.addEventListener('DOMContentLoaded', () => {
+            createParticles();
+            initializeApp();
+        });
 
         async function initializeApp() {
-            addLog('info', 'Initializing SPARK interface...');
+            addLog('info', '🚀 Initializing SPARK interface...');
             await loadInitialConfig();
             setupEventListeners();
             setupSocketListeners();
@@ -151,36 +808,55 @@
                 return await response.json();
             } catch (error) {
                 console.error(`API call to ${endpoint} failed:`, error);
-                showActionMessage(`Error: ${error.message}`, 'error');
-                addLog('error', `API call to ${endpoint} failed: ${error.message}`);
+                showActionMessage(`❌ Error: ${error.message}`, 'error');
+                addLog('error', `🚨 API call to ${endpoint} failed: ${error.message}`);
                 throw error;
             }
         }
 
         async function wakeServer() {
-            showActionMessage('Sending wake command...', 'info');
+            showActionMessage('⚡ Sending wake command...', 'info');
+            addLoadingState('wakeBtn');
             try {
                 const result = await apiCall('/api/wake', { method: 'POST' });
-                showActionMessage(result.message, result.success ? 'success' : 'error');
-                setTimeout(refreshStatus, 5000);
-            } catch (e) {}
+                showActionMessage(result.success ? '✅ ' + result.message : '❌ ' + result.message, result.success ? 'success' : 'error');
+                if (result.success) {
+                    addLog('success', '🌅 Wake command sent successfully');
+                    setTimeout(refreshStatus, 5000);
+                }
+            } catch (e) {
+                addLog('error', '🚨 Failed to send wake command');
+            } finally {
+                removeLoadingState('wakeBtn');
+            }
         }
 
         async function sleepServer() {
-            showActionMessage('Sending sleep command...', 'info');
+            showActionMessage('💤 Sending sleep command...', 'info');
+            addLoadingState('sleepBtn');
             try {
                 const result = await apiCall('/api/sleep', { method: 'POST' });
-                showActionMessage(result.message, result.success ? 'success' : 'error');
-                setTimeout(refreshStatus, 5000);
-            } catch(e) {}
+                showActionMessage(result.success ? '✅ ' + result.message : '❌ ' + result.message, result.success ? 'success' : 'error');
+                if (result.success) {
+                    addLog('success', '💤 Sleep command sent successfully');
+                    setTimeout(refreshStatus, 5000);
+                }
+            } catch(e) {
+                addLog('error', '🚨 Failed to send sleep command');
+            } finally {
+                removeLoadingState('sleepBtn');
+            }
         }
 
         async function refreshStatus() {
-            addLog('info', 'Refreshing server status...');
+            addLog('info', '🔄 Refreshing server status...');
             try {
                 const status = await apiCall('/api/status');
                 updateAllUI(status);
-            } catch(e) {}
+                addLog('success', '✅ Status updated successfully');
+            } catch(e) {
+                addLog('error', '🚨 Failed to refresh status');
+            }
         }
 
         async function loadInitialConfig() {
@@ -189,30 +865,48 @@
                 const autoSleepConfig = config.autoSleep;
                 const targetServerConfig = config.targetServer;
 
+                // Set the checkbox states based on server config
                 document.getElementById('idleEnableCheckbox').checked = autoSleepConfig.enabled;
                 document.getElementById('gpuEnableCheckbox').checked = autoSleepConfig.monitorGpu;
                 document.getElementById('timeoutSlider').value = autoSleepConfig.minutes;
                 document.getElementById('timeoutValue').textContent = `${autoSleepConfig.minutes} minutes`;
 
                 document.getElementById('configIP').textContent = targetServerConfig.ip;
-                document.getElementById('configMAC').textContent = targetServerConfig.mac;
+                
+                // Format MAC address properly to fit in box
+                const mac = targetServerConfig.mac;
+                const formattedMac = mac.includes(':') ? mac : mac.replace(/(.{2})/g, '$1:').slice(0, -1);
+                document.getElementById('configMAC').textContent = formattedMac;
+                
                 document.getElementById('configSSH').textContent = targetServerConfig.sshPort;
                 document.getElementById('configHTTP').textContent = targetServerConfig.httpPort;
                 document.getElementById('serverIP').textContent = targetServerConfig.ip;
 
+                // Update UI state based on enabled status
                 toggleIdleOptions();
-            } catch (error) { /* error is already logged */ }
+                
+                addLog('success', '⚙️ Configuration loaded successfully');
+            } catch (error) {
+                addLog('error', '🚨 Failed to load configuration');
+            }
         }
 
         function setupEventListeners() {
-            document.getElementById('idleEnableCheckbox').addEventListener('change', () => { toggleIdleOptions(); updateAutoSleepSettings(); });
+            document.getElementById('idleEnableCheckbox').addEventListener('change', () => { 
+                toggleIdleOptions(); 
+                updateAutoSleepSettings(); 
+            });
             document.getElementById('gpuEnableCheckbox').addEventListener('change', updateAutoSleepSettings);
             const slider = document.getElementById('timeoutSlider');
-            slider.addEventListener('input', () => { document.getElementById('timeoutValue').textContent = `${slider.value} minutes`; });
+            slider.addEventListener('input', () => { 
+                document.getElementById('timeoutValue').textContent = `${slider.value} minutes`; 
+            });
             slider.addEventListener('change', updateAutoSleepSettings);
         }
 
-        function toggleIdleOptions() { document.getElementById('idleOptionsContainer').classList.toggle('hidden', !document.getElementById('idleEnableCheckbox').checked); }
+        function toggleIdleOptions() { 
+            document.getElementById('idleOptionsContainer').classList.toggle('hidden', !document.getElementById('idleEnableCheckbox').checked); 
+        }
 
         async function updateAutoSleepSettings() {
             const config = {
@@ -221,23 +915,46 @@
                 minutes: parseInt(document.getElementById('timeoutSlider').value)
             };
             try {
-                 await apiCall('/api/config/autosleep', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
-                 addLog('info', 'Auto-sleep settings updated.');
-            } catch(e) {}
+                await apiCall('/api/config/autosleep', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify(config) 
+                });
+                addLog('info', '⚙️ Auto-sleep settings updated');
+            } catch(e) {
+                addLog('error', '🚨 Failed to update auto-sleep settings');
+            }
         }
 
         function setupSocketListeners() {
-            socket.on('connect', () => addLog('info', 'Connected to SPARK server.'));
-            socket.on('disconnect', () => addLog('warn', 'Disconnected from SPARK server.'));
-            socket.on('statusUpdate', (status) => updateAllUI(status));
-            socket.on('error', (error) => addLog('error', `SPARK Error: ${error.message}`));
+            socket.on('connect', () => addLog('info', '🔗 Connected to SPARK server'));
+            socket.on('disconnect', () => addLog('warn', '⚠️ Disconnected from SPARK server'));
+            socket.on('statusUpdate', (status) => {
+                updateAllUI(status);
+                addLog('info', '✅ Status updated successfully');
+            });
+            socket.on('error', (error) => addLog('error', `🚨 SPARK Error: ${error.message}`));
+            socket.on('log', (logData) => {
+                addLog(logData.level, logData.message);
+            });
         }
         
         function updateAllUI(status) {
             const indicator = document.getElementById('statusIndicator');
             indicator.className = `status-indicator status-${status.isOnline ? 'online' : 'offline'}`;
-            document.getElementById('serverStatus').textContent = status.isOnline ? 'Online' : 'Offline';
-            document.getElementById('lastSeen').textContent = status.isOnline ? new Date(status.lastSeen).toLocaleString() : 'N/A';
+            document.getElementById('serverStatus').textContent = status.isOnline ? '🟢 Online' : '🔴 Offline';
+            
+            // Format date better
+            const lastSeenDate = status.isOnline && status.lastSeen !== 'Never' ? 
+                new Date(status.lastSeen).toLocaleString('en-GB', {
+                    day: '2-digit',
+                    month: '2-digit', 
+                    year: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                }) : 'Never';
+            document.getElementById('lastSeen').textContent = lastSeenDate;
+            
             document.getElementById('responseTime').textContent = status.performance.responseTime ? `${status.performance.responseTime}ms` : '-';
             
             updateServiceStatus('pingStatus', status.services.ping);
@@ -246,9 +963,16 @@
             updateServiceStatus('targetHttpStatus', status.services.targetHttp);
 
             updatePerformanceMetric('cpuUsage', 'cpuBar', status.performance.cpuUsage);
-            updatePerformanceMetric('memoryUsage', 'memoryBar', status.performance.memoryUsage);
+            updatePerformanceMetric('memoryUsage', 'memoryBar', status.performance.memoryUsage, {
+                memoryUsed: status.performance.memoryUsed,
+                memoryTotal: status.performance.memoryTotal
+            });
             updatePerformanceMetric('diskUsage', 'diskBar', status.performance.diskUsage);
             updatePerformanceMetric('gpuUsage', 'gpuBar', status.performance.gpuUsage);
+            updatePerformanceMetric('vramUsage', 'vramBar', status.performance.vramUsage, {
+                vramUsed: status.performance.vramUsed,
+                vramTotal: status.performance.vramTotal
+            });
 
             updateAutoSleepUI(status.autoSleep);
         }
@@ -261,12 +985,22 @@
             }
         }
 
-        function updatePerformanceMetric(valueId, barId, value) {
+        function updatePerformanceMetric(valueId, barId, value, extraData = null) {
             const valueEl = document.getElementById(valueId);
             const barEl = document.getElementById(barId);
             if(valueEl && barEl){
                 if (typeof value === 'number' && !isNaN(value)) {
-                    valueEl.textContent = `${value.toFixed(1)}%`;
+                    // Special formatting for VRAM
+                    if (valueId === 'vramUsage' && extraData && extraData.vramUsed !== undefined && extraData.vramTotal !== undefined) {
+                        valueEl.textContent = `${value.toFixed(1)}% (${extraData.vramUsed}GB/${extraData.vramTotal}GB)`;
+                    }
+                    // Special formatting for Memory
+                    else if (valueId === 'memoryUsage' && extraData && extraData.memoryUsed !== undefined && extraData.memoryTotal !== undefined) {
+                        valueEl.textContent = `${value.toFixed(1)}% (${extraData.memoryUsed}GB/${extraData.memoryTotal}GB)`;
+                    }
+                    else {
+                        valueEl.textContent = `${value.toFixed(1)}%`;
+                    }
                     barEl.style.width = `${Math.min(value, 100)}%`;
                 } else {
                     valueEl.textContent = 'N/A';
@@ -280,7 +1014,7 @@
             if (autoSleep.enabled && autoSleep.isIdle && autoSleep.timeUntilSleep !== null) {
                 const minutes = Math.floor(autoSleep.timeUntilSleep / 60000);
                 const seconds = Math.floor((autoSleep.timeUntilSleep % 60000) / 1000).toString().padStart(2, '0');
-                container.textContent = `Sleeping in ${minutes}:${seconds}`;
+                container.textContent = `💤 Sleeping in ${minutes}:${seconds}`;
                 container.style.display = 'block';
             } else {
                 container.style.display = 'none';
@@ -291,22 +1025,45 @@
             const el = document.getElementById('actionMessage');
             el.textContent = message;
             el.style.display = 'block';
-            el.style.color = type === 'error' ? '#742a2a' : '#22543d';
-            el.style.backgroundColor = type === 'error' ? '#fed7d7' : '#c6f6d5';
+            el.style.color = type === 'error' ? '#742a2a' : (type === 'success' ? '#22543d' : '#2d3748');
+            el.style.background = type === 'error' ? 
+                'linear-gradient(135deg, #fed7d7, #feb2b2)' : 
+                (type === 'success' ? 
+                    'linear-gradient(135deg, #c6f6d5, #9ae6b4)' : 
+                    'linear-gradient(135deg, #bee3f8, #90cdf4)');
+            el.style.border = `2px solid ${type === 'error' ? '#f56565' : (type === 'success' ? '#48bb78' : '#4299e1')}`;
             setTimeout(() => { el.style.display = 'none'; }, 5000);
+        }
+
+        function addLoadingState(buttonId) {
+            const btn = document.getElementById(buttonId);
+            btn.classList.add('loading');
+            btn.disabled = true;
+        }
+
+        function removeLoadingState(buttonId) {
+            const btn = document.getElementById(buttonId);
+            btn.classList.remove('loading');
+            btn.disabled = false;
         }
 
         let logs = [];
         function addLog(level, message) {
             const timestamp = new Date().toLocaleTimeString();
-            logs.unshift({ timestamp, level, message });
+            const emoji = level === 'success' ? '✅' : (level === 'warn' ? '⚠️' : (level === 'error' ? '🚨' : 'ℹ️'));
+            logs.unshift({ timestamp, level, message, emoji });
             if (logs.length > 50) logs.pop();
+            
             const logsContainer = document.getElementById('logsContainer');
-            logsContainer.innerHTML = logs.map(log => `
+            logsContainer.innerHTML = logs.map((log) => `
                 <div class="log-entry">
                     <span style="color: #68d391">[${log.timestamp}]</span>
-                    <span style="font-weight: bold; color: ${level === 'info' ? '#63b3ed' : level === 'warn' ? '#f6e05e' : '#fc8181'}">[${level.toUpperCase()}]</span>
-                    ${log.message}
+                    <span style="font-weight: bold; color: ${
+                        log.level === 'info' ? '#63b3ed' : 
+                        log.level === 'warn' ? '#f6e05e' : 
+                        log.level === 'error' ? '#fc8181' : '#9ae6b4'
+                    }">[${log.level.toUpperCase()}]</span>
+                    ${log.emoji} ${log.message}
                 </div>
             `).join('');
         }
