@@ -3,41 +3,36 @@ services:
     build: .
     container_name: spark-power-manager
     restart: unless-stopped
+    # REVERTED: Go back to bridge mode so the web UI is accessible.
     ports:
       - "3000:3000"
     environment:
+      # --- Core SPARK Settings ---
       - NODE_ENV=${NODE_ENV:-production}
       - TARGET_SERVER_IP=${TARGET_SERVER_IP}
       - TARGET_SERVER_MAC=${TARGET_SERVER_MAC}
+      - SSH_USERNAME=${SSH_USERNAME}
       - TARGET_SERVER_SSH_PORT=${TARGET_SERVER_SSH_PORT:-22}
       - TARGET_SERVER_HTTP_PORT=${TARGET_SERVER_HTTP_PORT:-11434}
-      - PING_INTERVAL=${PING_INTERVAL:-5000}
-      - HEALTH_CHECK_INTERVAL=${HEALTH_CHECK_INTERVAL:-10000}
       - PORT=${PORT:-3000}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - SSH_USERNAME=${SSH_USERNAME}
-      - SSH_PRIVATE_KEY_PATH=/app/.ssh/id_rsa
+      # --- GPU Auto-Sleep Settings (from .env) ---
+      - AUTO_SLEEP_GPU_THRESHOLD=${AUTO_SLEEP_GPU_THRESHOLD:-5}
+      - AUTO_SLEEP_IDLE_MINUTES=${AUTO_SLEEP_IDLE_MINUTES:-5}
     volumes:
       - ./logs:/app/logs
+      - ./.ssh:/app/.ssh
       - /etc/localtime:/etc/localtime:ro
-      # Mount SSH key for sleep functionality
-      - ${SSH_PRIVATE_KEY_PATH}:/tmp/ssh_key:ro
-    # Add init script to copy and fix SSH key permissions
     command: >
       sh -c "
-        cp /tmp/ssh_key /app/.ssh/id_rsa 2>/dev/null || echo 'No SSH key mounted';
-        chmod 600 /app/.ssh/id_rsa 2>/dev/null || echo 'Could not set SSH key permissions';
-        chown nodejs:nodejs /app/.ssh/id_rsa 2>/dev/null || echo 'Could not change SSH key ownership';
+        chown -R nodejs:nodejs /app/.ssh &&
+        chmod 700 /app/.ssh &&
+        chmod 600 /app/.ssh/* &&
         node dist/server.js
       "
-    # Required for network operations (ping, WoL)
     cap_add:
       - NET_RAW
       - NET_ADMIN
-    # Use privileged mode for network access
-    privileged: true
-    networks:
-      - spark-network
 
 networks:
   spark-network:

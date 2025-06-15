@@ -1,28 +1,27 @@
 import { EventEmitter } from 'events';
 import ping from 'ping';
 import { Logger } from 'winston';
-import { ServerConfig } from './powerManager';
+import { PowerManager, ServerConfig } from './powerManager';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
 
+export interface AutoSleepConfig {
+  enabled: boolean;
+  minutes: number;
+  monitorGpu: boolean;
+  gpuThreshold: number;
+  idleMinutes: number; // For GPU specifically
+}
+
 export interface ServerStatus {
   isOnline: boolean;
   lastSeen: string;
-  uptime: number;
-  services: {
-    ping: boolean;
-    ssh: boolean;
-    http: boolean;
-    ollama: boolean;
-  };
-  performance: {
-    responseTime: number;
-    cpuUsage?: number;
-    memoryUsage?: number;
-    diskUsage?: number;
-  };
+  services: { ping: boolean; ssh: boolean; http: boolean; targetHttp: boolean; };
+  performance: { responseTime: number; cpuUsage?: number; memoryUsage?: number; diskUsage?: number; gpuUsage?: number; };
+  autoSleep: AutoSleepConfig & { isIdle: boolean; timeUntilSleep: number | null; };
+  config: { targetServer: ServerConfig }; // Added to pass config to UI
   timestamp: string;
 }
 
@@ -31,200 +30,171 @@ export class ServerMonitor extends EventEmitter {
   private pingInterval?: NodeJS.Timeout;
   private healthInterval?: NodeJS.Timeout;
   private lastStatus: ServerStatus;
+  private powerManager: PowerManager;
+  private logger: Logger;
+  private config: ServerConfig;
+
+  private gpuIdleTimerStart: number | null = null;
+  private lastActivityTimestamp: number = Date.now();
+
+  private autoSleepConfig: AutoSleepConfig;
 
   constructor(
-    private config: ServerConfig,
-    private monitoringConfig: { pingInterval: number; healthCheckInterval: number },
-    private logger: Logger
+    config: ServerConfig,
+    monitoringConfig: { pingInterval: number; healthCheckInterval: number },
+    initialGpuConfig: { gpuThreshold: number, idleMinutes: number },
+    powerManager: PowerManager,
+    logger: Logger
   ) {
     super();
+    this.config = config;
+    this.powerManager = powerManager;
+    this.logger = logger;
     
+    this.autoSleepConfig = {
+        ...initialGpuConfig,
+        enabled: false,
+        minutes: 15,
+        monitorGpu: false,
+    };
+
     this.lastStatus = {
       isOnline: false,
       lastSeen: 'Never',
-      uptime: 0,
-      services: {
-        ping: false,
-        ssh: false,
-        http: false,
-        ollama: false
-      },
-      performance: {
-        responseTime: 0
-      },
+      services: { ping: false, ssh: false, http: false, targetHttp: false },
+      performance: { responseTime: 0 },
+      autoSleep: { ...this.autoSleepConfig, isIdle: false, timeUntilSleep: null },
+      config: { targetServer: this.config },
       timestamp: new Date().toISOString()
     };
   }
-
-  start(): void {
-    if (this.monitoring) return;
-    
-    this.monitoring = true;
-    this.logger.info('Starting SPARK server monitoring');
-    
-    // Start ping monitoring
-    this.pingInterval = setInterval(async () => {
-      await this.checkPing();
-    }, this.monitoringConfig.pingInterval);
-    
-    // Start comprehensive health checks
-    this.healthInterval = setInterval(async () => {
-      await this.performHealthCheck();
-    }, this.monitoringConfig.healthCheckInterval);
-    
-    // Initial checks
-    this.checkPing();
-    this.performHealthCheck();
+  
+  public recordActivity() { this.lastActivityTimestamp = Date.now(); }
+  public updateAutoSleepConfig(newConfig: Partial<AutoSleepConfig>) {
+      this.logger.info(`Updating auto-sleep config: ${JSON.stringify(newConfig)}`);
+      this.autoSleepConfig = { ...this.autoSleepConfig, ...newConfig };
   }
 
-  stop(): void {
-    if (!this.monitoring) return;
-    
-    this.monitoring = false;
-    this.logger.info('Stopping SPARK server monitoring');
-    
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = undefined;
-    }
-    
-    if (this.healthInterval) {
-      clearInterval(this.healthInterval);
-      this.healthInterval = undefined;
-    }
+  public getFullConfig() {
+      return {
+          autoSleep: this.autoSleepConfig,
+          targetServer: this.config
+      };
   }
-
-  async getServerStatus(): Promise<ServerStatus> {
+  
+  public async getServerStatus(): Promise<ServerStatus> {
+    this.lastStatus.autoSleep = { ...this.lastStatus.autoSleep, ...this.autoSleepConfig };
+    this.lastStatus.config = { targetServer: this.config };
     return { ...this.lastStatus };
   }
 
-  private async checkPing(): Promise<void> {
-    try {
-      const startTime = Date.now();
-      const result = await ping.promise.probe(this.config.ip, {
-        timeout: 3,
-        extra: ['-c', '1']
-      });
-      
-      const responseTime = Date.now() - startTime;
-      const wasOnline = this.lastStatus.isOnline;
-      const isOnline = result.alive;
-      
-      if (isOnline !== wasOnline) {
-        this.logger.info(`SPARK server ${this.config.ip} is now ${isOnline ? 'online' : 'offline'}`);
-      }
-      
-      this.lastStatus.isOnline = isOnline;
-      this.lastStatus.performance.responseTime = responseTime;
-      this.lastStatus.services.ping = isOnline;
-      
-      if (isOnline) {
-        this.lastStatus.lastSeen = new Date().toISOString();
-      }
-      
-      this.lastStatus.timestamp = new Date().toISOString();
-      this.emit('statusUpdate', this.lastStatus);
-      
-    } catch (error) {
-      this.logger.error('SPARK ping check failed:', error);
-      this.lastStatus.isOnline = false;
-      this.lastStatus.services.ping = false;
-      this.lastStatus.timestamp = new Date().toISOString();
-      this.emit('statusUpdate', this.lastStatus);
-    }
+  public start(): void {
+    if (this.monitoring) return;
+    this.monitoring = true;
+    this.logger.info('Starting SPARK server monitoring');
+    this.healthInterval = setInterval(() => this.performHealthCheck(), 10000);
+    this.performHealthCheck();
   }
 
   private async performHealthCheck(): Promise<void> {
-    if (!this.lastStatus.isOnline) return;
+    const pingResult = await ping.promise.probe(this.config.ip, {timeout: 2}).catch(() => ({ alive: false, time: 0 }));
+    const isOnline = pingResult.alive;
+
+    if (this.lastStatus.isOnline !== isOnline) {
+      this.logger.info(`Server is now ${isOnline ? 'online' : 'offline'}.`);
+    }
+    this.lastStatus.isOnline = isOnline;
+
+    if(isOnline) {
+        this.lastStatus.lastSeen = new Date().toISOString();
+        this.lastStatus.performance.responseTime = Number(pingResult.time) || 0;
+        this.lastStatus.services = await this.checkServices();
+        this.lastStatus.performance = { ...this.lastStatus.performance, ...(await this.getPerformanceMetrics())};
+    } else {
+        this.lastStatus.services = { ping: false, ssh: false, http: false, targetHttp: false };
+        this.lastStatus.performance = { responseTime: 0, cpuUsage: undefined, memoryUsage: undefined, diskUsage: undefined, gpuUsage: undefined };
+    }
     
-    try {
-      const services = await this.checkServices();
-      const performance = await this.getPerformanceMetrics();
-      
-      this.lastStatus.services = { ...this.lastStatus.services, ...services };
-      this.lastStatus.performance = { ...this.lastStatus.performance, ...performance };
-      this.lastStatus.timestamp = new Date().toISOString();
-      
-      this.emit('statusUpdate', this.lastStatus);
-      
-    } catch (error) {
-      this.logger.error('SPARK health check failed:', error);
-      this.emit('error', error);
+    this.handleAutoSleep();
+    this.emit('statusUpdate', await this.getServerStatus());
+  }
+
+  private handleAutoSleep(): void {
+    if (!this.lastStatus.isOnline || !this.autoSleepConfig.enabled) {
+        this.gpuIdleTimerStart = null;
+        this.lastActivityTimestamp = Date.now();
+        this.lastStatus.autoSleep = { ...this.autoSleepConfig, isIdle: false, timeUntilSleep: null };
+        return;
+    }
+
+    let sleepReason: string | null = null;
+    let timeUntilSleep = Infinity;
+
+    const requestTimeoutMs = this.autoSleepConfig.minutes * 60 * 1000;
+    const elapsedSinceRequest = Date.now() - this.lastActivityTimestamp;
+    
+    if (elapsedSinceRequest >= requestTimeoutMs) {
+        sleepReason = `No requests for over ${this.autoSleepConfig.minutes} minutes.`;
+        timeUntilSleep = 0;
+    } else {
+        timeUntilSleep = Math.min(timeUntilSleep, requestTimeoutMs - elapsedSinceRequest);
+    }
+    
+    if (this.autoSleepConfig.monitorGpu) {
+        const gpuUsage = this.lastStatus.performance.gpuUsage;
+        const isGpuIdle = typeof gpuUsage === 'number' && gpuUsage < this.autoSleepConfig.gpuThreshold;
+        if (isGpuIdle) {
+            if (this.gpuIdleTimerStart === null) this.gpuIdleTimerStart = Date.now();
+            const gpuIdleDurationMs = this.autoSleepConfig.idleMinutes * 60 * 1000;
+            const elapsedGpuIdle = Date.now() - this.gpuIdleTimerStart;
+            
+            if (elapsedGpuIdle >= gpuIdleDurationMs) {
+                if(!sleepReason) sleepReason = `GPU idle for over ${this.autoSleepConfig.idleMinutes} minutes.`;
+                timeUntilSleep = 0;
+            } else {
+                timeUntilSleep = Math.min(timeUntilSleep, gpuIdleDurationMs - elapsedGpuIdle);
+            }
+        } else {
+            this.gpuIdleTimerStart = null;
+        }
+    }
+
+    this.lastStatus.autoSleep = { ...this.autoSleepConfig, isIdle: timeUntilSleep < Infinity, timeUntilSleep: timeUntilSleep === Infinity ? null : timeUntilSleep };
+    
+    if (sleepReason) {
+        this.logger.info(`Auto-sleep triggered. Reason: ${sleepReason}. Putting server to sleep.`);
+        this.powerManager.sleepServer();
+        this.gpuIdleTimerStart = null;
+        this.lastActivityTimestamp = Date.now();
     }
   }
 
-  private async checkServices(): Promise<Partial<ServerStatus['services']>> {
-    const services: Partial<ServerStatus['services']> = {};
-    
-    // Check SSH
-    try {
-      await execAsync(`nc -z -w3 ${this.config.ip} ${this.config.sshPort}`);
-      services.ssh = true;
-    } catch {
-      services.ssh = false;
+  private async checkServices(): Promise<ServerStatus['services']> {
+    const services: ServerStatus['services'] = { ping: true, ssh: false, http: false, targetHttp: false };
+    try { await execAsync(`nc -z -w3 ${this.config.ip} ${this.config.sshPort}`); services.ssh = true; } catch {}
+    try { await execAsync(`nc -z -w3 ${this.config.ip} ${this.config.httpPort}`); services.http = true; } catch {}
+    if (services.http) {
+        try { await execAsync(`curl -s --head --connect-timeout 3 --max-time 5 http://${this.config.ip}:${this.config.httpPort}/`); services.targetHttp = true; } catch {}
     }
-    
-    // Check HTTP port
-    try {
-      await execAsync(`nc -z -w3 ${this.config.ip} ${this.config.httpPort}`);
-      services.http = true;
-    } catch {
-      services.http = false;
-    }
-    
-    // Check Ollama API
-    try {
-      const { stdout } = await execAsync(`curl -s --connect-timeout 3 --max-time 5 http://${this.config.ip}:${this.config.httpPort}/api/tags`);
-      services.ollama = stdout.includes('models') || stdout.includes('[') || stdout.includes('{');
-    } catch {
-      services.ollama = false;
-    }
-    
     return services;
   }
 
   private async getPerformanceMetrics(): Promise<Partial<ServerStatus['performance']>> {
     const performance: Partial<ServerStatus['performance']> = {};
+    if (!this.lastStatus.services.ssh) return performance;
     
+    const username = process.env.SSH_USERNAME || 'sparkuser';
+    const sshCommand = `ssh -i /app/.ssh/id_rsa -o ConnectTimeout=5 -o StrictHostKeyChecking=no -p ${this.config.sshPort} ${username}@${this.config.ip}`;
     try {
-      // Try to get system info via SSH (requires SSH access)
-      const sshCommand = `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -p ${this.config.sshPort} user@${this.config.ip}`;
-      
-      // CPU usage
-      try {
-        const { stdout: cpuOutput } = await execAsync(`${sshCommand} "top -bn1 | grep 'Cpu(s)' | awk '{print $2}' | cut -d'%' -f1"`);
-        performance.cpuUsage = parseFloat(cpuOutput.trim());
-      } catch {
-        // SSH not available or no access
-      }
-      
-      // Memory usage
-      try {
-        const { stdout: memOutput } = await execAsync(`${sshCommand} "free | grep Mem | awk '{printf \"%.1f\", $3/$2 * 100.0}'"`);
-        performance.memoryUsage = parseFloat(memOutput.trim());
-      } catch {
-        // SSH not available or no access
-      }
-      
-      // Disk usage
-      try {
-        const { stdout: diskOutput } = await execAsync(`${sshCommand} "df -h / | awk 'NR==2{printf \"%s\", $5}' | cut -d'%' -f1"`);
-        performance.diskUsage = parseFloat(diskOutput.trim());
-      } catch {
-        // SSH not available or no access
-      }
-      
-    } catch (error) {
-      // SSH metrics not available
-      this.logger.debug('SPARK performance metrics via SSH not available');
-    }
-    
+      const { stdout: cpu } = await execAsync(`${sshCommand} "top -bn1 | grep 'Cpu(s)' | awk '{print $2+$4}'"`);
+      performance.cpuUsage = parseFloat(cpu.trim());
+      const { stdout: mem } = await execAsync(`${sshCommand} "free | grep Mem | awk '{printf \\"%.1f\\", $3/$2 * 100.0}'"`);
+      performance.memoryUsage = parseFloat(mem.trim());
+      const { stdout: disk } = await execAsync(`${sshCommand} "df -h / | awk 'NR==2{print \\$5}' | sed 's/%//'"`);
+      performance.diskUsage = parseFloat(disk.trim());
+      const { stdout: gpu } = await execAsync(`${sshCommand} "nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits"`);
+      performance.gpuUsage = parseFloat(gpu.trim());
+    } catch (err: any) { this.logger.debug('Could not get all performance metrics: ' + err.message); }
     return performance;
-  }
-
-  private calculateUptime(): number {
-    // This would need to be implemented based on your specific requirements
-    // Could track time since last wake, or query the actual system uptime
-    return 0;
   }
 }
