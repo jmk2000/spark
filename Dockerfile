@@ -13,7 +13,7 @@ RUN apk add --no-cache python3 make g++
 COPY package*.json tsconfig.json ./
 
 # Install all dependencies (including dev dependencies for build)
-RUN npm ci --include=dev
+RUN npm install
 
 # Copy source code
 COPY src/ ./src/
@@ -30,7 +30,7 @@ WORKDIR /app
 # Update npm in production stage too
 RUN npm install -g npm@latest
 
-# Install runtime dependencies including cross-platform WoL tools
+# Install runtime dependencies (WoL tools optional - SPARK has built-in UDP)
 RUN apk add --no-cache \
     curl \
     iputils \
@@ -39,19 +39,13 @@ RUN apk add --no-cache \
     netcat-openbsd \
     bash \
     ethtool \
-    iproute2 \
-    python3 \
-    py3-pip
-
-# Install wakeonlan from testing repository (more reliable than pip)
-RUN echo "https://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
-    apk add --no-cache wakeonlan etherwake
+    iproute2
 
 # Copy package files
 COPY package*.json ./
 
 # Install only production dependencies and clean cache
-RUN npm ci --omit=dev && \
+RUN npm install --only=production && \
     npm cache clean --force
 
 # Copy built application from builder stage
