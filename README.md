@@ -63,7 +63,7 @@ SPARK is designed to be deployed as a Docker container, often on a low-power, al
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/spark.git
+git clone https://github.com/jmk2000/spark.git
 cd spark
 ```
 
