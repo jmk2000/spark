@@ -6,6 +6,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import winston from 'winston';
+import ping from 'ping';
 import { PowerManager } from './powerManager';
 import { ServerMonitor } from './serverMonitor';
 import fetch, { Headers } from 'node-fetch';
@@ -65,12 +66,27 @@ app.use((req, res, next) => {
   next();
 });
 
+// Enhanced configuration with health check settings
 const config = {
   targetServer: {
     ip: process.env.TARGET_SERVER_IP || '192.168.1.100',
     mac: process.env.TARGET_SERVER_MAC || '00:11:22:33:44:55',
     sshPort: parseInt(process.env.TARGET_SERVER_SSH_PORT || '22'),
-    httpPort: parseInt(process.env.TARGET_SERVER_HTTP_PORT || '11434')
+    httpPort: parseInt(process.env.TARGET_SERVER_HTTP_PORT || '11434'),
+    // Health check configuration
+    healthCheckPath: process.env.TARGET_HEALTH_CHECK_PATH || '/',
+    healthCheckMethod: process.env.TARGET_HEALTH_CHECK_METHOD || 'HEAD',
+    healthCheckTimeout: parseInt(process.env.TARGET_HEALTH_CHECK_TIMEOUT || '5000'),
+    // Parse success codes - supports ranges and individual codes
+    healthCheckSuccessCodes: (process.env.TARGET_HEALTH_CHECK_SUCCESS_CODES || '200-299,404')
+      .split(',')
+      .map(range => {
+        if (range.includes('-')) {
+          const [start, end] = range.split('-').map(Number);
+          return { start, end };
+        }
+        return { start: Number(range), end: Number(range) };
+      })
   },
   monitoring: { 
     pingInterval: 5000, 
@@ -79,6 +95,11 @@ const config = {
   autoSleep: {
     gpuThreshold: parseInt(process.env.AUTO_SLEEP_GPU_THRESHOLD || '5'),
     idleMinutes: parseInt(process.env.AUTO_SLEEP_IDLE_MINUTES || '5'),
+  },
+  proxy: {
+    wakeTimeoutSeconds: parseInt(process.env.PROXY_WAKE_TIMEOUT || '180'),
+    requestTimeoutSeconds: parseInt(process.env.PROXY_REQUEST_TIMEOUT || '300'),
+    readinessBufferMs: parseInt(process.env.SERVICE_READINESS_BUFFER_MS || '1000')
   }
 };
 
@@ -92,7 +113,13 @@ logger.info('SPARK Configuration:', {
   targetIP: config.targetServer.ip,
   targetMAC: config.targetServer.mac,
   sshPort: config.targetServer.sshPort,
-  httpPort: config.targetServer.httpPort
+  httpPort: config.targetServer.httpPort,
+  healthCheck: {
+    path: config.targetServer.healthCheckPath,
+    method: config.targetServer.healthCheckMethod,
+    timeout: config.targetServer.healthCheckTimeout,
+    successCodes: config.targetServer.healthCheckSuccessCodes
+  }
 });
 
 const powerManager = new PowerManager(config.targetServer, logger);
@@ -104,7 +131,99 @@ const serverMonitor = new ServerMonitor(
   logger
 );
 
-// Enhanced proxy middleware with proper timeout handling for node-fetch v2
+// Service-agnostic health check function
+async function checkServiceReadiness(
+  ip: string, 
+  port: number, 
+  healthCheckPath: string = '/',
+  method: string = 'HEAD',
+  timeoutMs: number = 5000,
+  successCodes: Array<{start: number, end: number}> = [{start: 200, end: 299}]
+): Promise<{ ready: boolean; statusCode?: number; error?: string }> {
+  try {
+    const testUrl = `http://${ip}:${port}${healthCheckPath.startsWith('/') ? healthCheckPath : '/' + healthCheckPath}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    logger.debug(`Health check: ${method} ${testUrl} (timeout: ${timeoutMs}ms)`);
+    
+    const response = await fetch(testUrl, {
+      method: method.toUpperCase(),
+      signal: controller.signal,
+      // Don't follow redirects for health checks
+      redirect: 'manual'
+    });
+    
+    clearTimeout(timeoutId);
+    
+    const statusCode = response.status;
+    
+    // Check if status code is in any of the success ranges
+    const isHealthy = successCodes.some(range => 
+      statusCode >= range.start && statusCode <= range.end
+    );
+    
+    logger.debug(`Health check response: ${statusCode} (healthy: ${isHealthy})`);
+    
+    return {
+      ready: isHealthy,
+      statusCode: statusCode
+    };
+    
+  } catch (error: any) {
+    logger.debug(`Health check failed: ${error.message}`);
+    return {
+      ready: false,
+      error: error.message
+    };
+  }
+}
+
+// Enhanced wait function with configurable health checks
+async function waitForServiceReadiness(
+  ip: string, 
+  port: number, 
+  maxWaitSeconds: number,
+  healthCheckPath: string,
+  method: string,
+  timeoutMs: number,
+  successCodes: Array<{start: number, end: number}>,
+  logger: any
+): Promise<boolean> {
+  const startTime = Date.now();
+  const maxWaitMs = maxWaitSeconds * 1000;
+  let attempt = 0;
+  let delay = 1000; // Start with 1 second
+  const maxDelay = 5000; // Cap at 5 seconds
+  
+  while (Date.now() - startTime < maxWaitMs) {
+    attempt++;
+    
+    logger.debug(`Service readiness check attempt ${attempt} (delay: ${delay}ms)`);
+    
+    const healthCheck = await checkServiceReadiness(ip, port, healthCheckPath, method, timeoutMs, successCodes);
+    
+    if (healthCheck.ready) {
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      logger.info(`Service became ready after ${elapsed} seconds (${attempt} attempts) - HTTP ${healthCheck.statusCode}`);
+      return true;
+    }
+    
+    logger.debug(`Service not ready: ${healthCheck.statusCode ? `HTTP ${healthCheck.statusCode}` : healthCheck.error}`);
+    
+    // Wait before next attempt
+    await new Promise(resolve => setTimeout(resolve, delay));
+    
+    // Exponential backoff with jitter
+    delay = Math.min(delay * 1.2 + Math.random() * 500, maxDelay);
+  }
+  
+  const elapsed = Math.round((Date.now() - startTime) / 1000);
+  logger.warn(`Service readiness timeout after ${elapsed} seconds (${attempt} attempts)`);
+  return false;
+}
+
+// Enhanced proxy middleware with configurable health checks
 const proxyMiddleware = async (req, res, next) => {
   const sparkInternalPaths = ['/', '/api/status', '/api/wake', '/api/sleep', '/api/config', '/api/config/autosleep'];
   
@@ -117,64 +236,76 @@ const proxyMiddleware = async (req, res, next) => {
   
   const targetPath = req.originalUrl.startsWith('/') ? req.originalUrl.substring(1) : req.originalUrl;
   const targetUrl = `http://${config.targetServer.ip}:${config.targetServer.httpPort}/${targetPath}`;
-  const WAKE_TIMEOUT_SECONDS = 180;
-  const PROXY_TIMEOUT_SECONDS = 300; // 5 minutes for LLM responses
 
   try {
     logger.info(`Transparent proxy triggered for [${req.method}] ${req.originalUrl}`);
-    let status = await serverMonitor.getServerStatus();
-
-    // Check if target service is available
-    if (!status.services.targetHttp) {
-      logger.info('Target HTTP service not online. Attempting to wake server...');
+    
+    // Step 1: Check if target service is immediately available using configured health check
+    const healthCheck = await checkServiceReadiness(
+      config.targetServer.ip,
+      config.targetServer.httpPort,
+      config.targetServer.healthCheckPath,
+      config.targetServer.healthCheckMethod,
+      config.targetServer.healthCheckTimeout,
+      config.targetServer.healthCheckSuccessCodes
+    );
+    
+    if (!healthCheck.ready) {
+      logger.info(`Target service not ready (${healthCheck.statusCode ? `HTTP ${healthCheck.statusCode}` : healthCheck.error}). Checking if server needs to be woken...`);
       
-      // Wake server if not online
-      if (!status.isOnline) {
+      // Step 2: Check if server is online at all
+      const pingResult = await ping.promise.probe(config.targetServer.ip, { timeout: 3 }).catch(() => ({ alive: false }));
+      
+      if (!pingResult.alive) {
+        logger.info('Server is offline. Sending Wake-on-LAN packet...');
         const wakeResult = await powerManager.wakeServer();
         if (!wakeResult.success) {
           throw new Error(`Failed to wake server: ${wakeResult.message}`);
         }
         logger.info('Wake-on-LAN packet sent, waiting for server to boot...');
+      } else {
+        logger.info('Server is online but service not ready. Waiting for service to start...');
       }
 
-      // Wait for service to become available
-      const startTime = Date.now();
-      let isReady = false;
-      let attempts = 0;
-      const maxAttempts = Math.floor(WAKE_TIMEOUT_SECONDS / 5);
-
-      while (Date.now() - startTime < WAKE_TIMEOUT_SECONDS * 1000 && attempts < maxAttempts) {
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        status = await serverMonitor.getServerStatus();
-        attempts++;
-        
-        logger.debug(`Wake attempt ${attempts}/${maxAttempts} - Service available: ${status.services.targetHttp}`);
-        
-        if (status.services.targetHttp) { 
-          isReady = true; 
-          break; 
-        }
-      }
+      // Step 3: Wait for service to become ready with configured health checks
+      const isReady = await waitForServiceReadiness(
+        config.targetServer.ip, 
+        config.targetServer.httpPort, 
+        config.proxy.wakeTimeoutSeconds,
+        config.targetServer.healthCheckPath,
+        config.targetServer.healthCheckMethod,
+        config.targetServer.healthCheckTimeout,
+        config.targetServer.healthCheckSuccessCodes,
+        logger
+      );
 
       if (!isReady) {
-        throw new Error(`Server wake-up timed out after ${WAKE_TIMEOUT_SECONDS} seconds`);
+        throw new Error(`Service readiness timeout after ${config.proxy.wakeTimeoutSeconds} seconds`);
       }
       
-      logger.info(`Server is ready after ${Math.round((Date.now() - startTime) / 1000)} seconds`);
+      logger.info('Target service is now ready for requests');
+    } else {
+      logger.debug(`Target service is immediately available (HTTP ${healthCheck.statusCode})`);
     }
+
+    // Step 4: Add configurable buffer delay to ensure service stability
+    if (config.proxy.readinessBufferMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, config.proxy.readinessBufferMs));
+      logger.debug(`Applied ${config.proxy.readinessBufferMs}ms readiness buffer`);
+    }
+
+    // Step 5: Make the proxy request
+    logger.debug(`Proxying to: ${targetUrl} with ${config.proxy.requestTimeoutSeconds}s timeout`);
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      logger.warn(`Request timeout after ${config.proxy.requestTimeoutSeconds}s, aborting...`);
+      controller.abort();
+    }, config.proxy.requestTimeoutSeconds * 1000);
 
     // Prepare request body
     const body = (req.method !== 'GET' && req.method !== 'HEAD' && Object.keys(req.body || {}).length > 0) 
       ? JSON.stringify(req.body) : undefined;
-
-    // Make proxy request with proper timeout using AbortController (Node.js 18+ compatible)
-    logger.debug(`Proxying to: ${targetUrl} with ${PROXY_TIMEOUT_SECONDS}s timeout`);
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      logger.warn(`Request timeout after ${PROXY_TIMEOUT_SECONDS}s, aborting...`);
-      controller.abort();
-    }, PROXY_TIMEOUT_SECONDS * 1000);
 
     let proxyResponse;
     try {
@@ -188,15 +319,14 @@ const proxyMiddleware = async (req, res, next) => {
         signal: controller.signal
       });
       
-      clearTimeout(timeoutId); // Clear timeout on success
-      logger.debug(`Proxy request completed successfully in ${Date.now()}ms`);
+      clearTimeout(timeoutId);
+      logger.debug(`Proxy request completed successfully`);
       
     } catch (fetchError: any) {
       clearTimeout(timeoutId);
       
-      // Handle AbortError specifically
       if (fetchError.name === 'AbortError') {
-        throw new Error(`Request timeout after ${PROXY_TIMEOUT_SECONDS} seconds`);
+        throw new Error(`Request timeout after ${config.proxy.requestTimeoutSeconds} seconds`);
       }
       throw fetchError;
     }
@@ -226,13 +356,13 @@ const proxyMiddleware = async (req, res, next) => {
       
       // Provide more specific error messages
       if (error.message.includes('timeout') || error.name === 'AbortError') {
-        errorMessage = `Request timed out after ${PROXY_TIMEOUT_SECONDS} seconds - this may be normal for long LLM responses`;
+        errorMessage = `Request timed out after ${config.proxy.requestTimeoutSeconds} seconds - this may be normal for long LLM responses`;
         statusCode = 504; // Gateway Timeout
       } else if (error.message.includes('ECONNREFUSED')) {
         errorMessage = 'Target server refused connection';
         statusCode = 502; // Bad Gateway
-      } else if (error.message.includes('wake-up timed out')) {
-        errorMessage = 'Server failed to wake up in time';
+      } else if (error.message.includes('readiness timeout')) {
+        errorMessage = 'Server failed to become ready in time';
         statusCode = 504; // Gateway Timeout
       }
       
@@ -240,8 +370,9 @@ const proxyMiddleware = async (req, res, next) => {
         error: errorMessage, 
         details: error.message,
         target: `${config.targetServer.ip}:${config.targetServer.httpPort}`,
+        healthCheck: `${config.targetServer.healthCheckMethod} ${config.targetServer.healthCheckPath}`,
         timestamp: new Date().toISOString(),
-        suggestion: statusCode === 504 ? `Try the request again with a longer timeout. Current timeout: ${PROXY_TIMEOUT_SECONDS}s` : undefined
+        suggestion: statusCode === 504 ? `Try the request again with a longer timeout. Current timeout: ${config.proxy.requestTimeoutSeconds}s` : undefined
       });
     }
   }
@@ -297,7 +428,21 @@ app.post('/api/sleep', async (req, res) => {
 app.get('/api/config', async (req, res) => {
   try {
     const fullConfig = serverMonitor.getFullConfig();
-    res.json(fullConfig);
+    // Add health check configuration to the response
+    const configWithHealthCheck = {
+      ...fullConfig,
+      targetServer: {
+        ...fullConfig.targetServer,
+        healthCheck: {
+          path: config.targetServer.healthCheckPath,
+          method: config.targetServer.healthCheckMethod,
+          timeout: config.targetServer.healthCheckTimeout,
+          successCodes: config.targetServer.healthCheckSuccessCodes
+        }
+      },
+      proxy: config.proxy
+    };
+    res.json(configWithHealthCheck);
   } catch (error: any) {
     logger.error('Config API error:', error);
     res.status(500).json({ error: 'Failed to get configuration', details: error.message });
@@ -337,7 +482,14 @@ app.get('/health', (req, res) => {
     status: 'healthy', 
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    version: process.env.npm_package_version || '1.0.0'
+    version: process.env.npm_package_version || '1.0.0',
+    config: {
+      targetServer: {
+        ip: config.targetServer.ip,
+        port: config.targetServer.httpPort,
+        healthCheck: `${config.targetServer.healthCheckMethod} ${config.targetServer.healthCheckPath}`
+      }
+    }
   });
 });
 
@@ -417,4 +569,5 @@ server.listen(PORT, () => {
   logger.info(`🚀 SPARK server with transparent proxy running on port ${PORT}`);
   logger.info(`🌐 Web interface: http://localhost:${PORT}`);
   logger.info(`🎯 Target server: ${config.targetServer.ip}:${config.targetServer.httpPort}`);
+  logger.info(`🏥 Health check: ${config.targetServer.healthCheckMethod} ${config.targetServer.healthCheckPath}`);
 });
