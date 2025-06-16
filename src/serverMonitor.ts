@@ -309,28 +309,21 @@ export class ServerMonitor extends EventEmitter {
       return performance;
     }
 
-    const sshCommand = `ssh -i /app/.ssh/id_rsa -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes -p ${this.config.sshPort} ${username}@${this.config.ip}`;
+    // CRITICAL FIX: Reduced SSH timeout and added more aggressive timeouts
+    const sshCommand = `ssh -i /app/.ssh/id_rsa -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes -p ${this.config.sshPort} ${username}@${this.config.ip}`;
     
-    // CPU Usage - Fixed: Get actual CPU usage percentage, not load average
+    // CPU Usage - same as before but with shorter timeout
     if (enableDebugLogs) {
       this.logger.info('📊 Getting CPU usage...');
     }
     try {
-      // Method 1: Use /proc/stat to calculate actual CPU usage over a short period
       const cpuCmd1 = `cat /proc/stat | grep '^cpu '`;
-      const { stdout: cpu1 } = await execAsync(`${sshCommand} "${cpuCmd1}"`, { timeout: 5000 });
+      const { stdout: cpu1 } = await execAsync(`${sshCommand} "${cpuCmd1}"`, { timeout: 3000 });
       
-      // Wait 1 second and get another reading
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      const { stdout: cpu2 } = await execAsync(`${sshCommand} "${cpuCmd1}"`, { timeout: 5000 });
+      const { stdout: cpu2 } = await execAsync(`${sshCommand} "${cpuCmd1}"`, { timeout: 3000 });
       
-      if (enableDebugLogs) {
-        this.logger.info(`📊 CPU stat1: '${cpu1.trim()}'`);
-        this.logger.info(`📊 CPU stat2: '${cpu2.trim()}'`);
-      }
-      
-      // Parse both readings
       const parseStats = (statLine: string) => {
         const numbers = statLine.trim().split(/\s+/).slice(1).map(Number);
         if (numbers.length >= 4) {
@@ -371,15 +364,13 @@ export class ServerMonitor extends EventEmitter {
         }
       }
       
-      // Fallback: if the calculation failed, use load average but scale it properly
+      // Fallback if calculation failed
       if (!performance.cpuUsage) {
         const loadCmd = `cat /proc/loadavg`;
-        const { stdout: load } = await execAsync(`${sshCommand} "${loadCmd}"`, { timeout: 5000 });
+        const { stdout: load } = await execAsync(`${sshCommand} "${loadCmd}"`, { timeout: 3000 });
         const loadAvg = parseFloat(load.trim().split(' ')[0]);
         
         if (!isNaN(loadAvg) && loadAvg >= 0) {
-          // Scale load average to percentage - load of 1.0 = 100% on single core
-          // But cap it more reasonably since load can be > 1.0
           performance.cpuUsage = Math.min(Math.round(loadAvg * 50 * 10) / 10, 100);
           if (enableDebugLogs) {
             this.logger.info(`✅ CPU usage (load fallback): ${performance.cpuUsage}%`);
@@ -392,25 +383,20 @@ export class ServerMonitor extends EventEmitter {
       }
     }
 
-    // Memory Usage - Simplified approach
+    // Memory Usage - with shorter timeout
     if (enableDebugLogs) {
       this.logger.info('📊 Getting memory usage...');
     }
     try {
-      // Get memory info with simple commands
       const memCmd = `cat /proc/meminfo | head -3`;
-      const { stdout: mem } = await execAsync(`${sshCommand} "${memCmd}"`, { timeout: 8000 });
-      
-      if (enableDebugLogs) {
-        this.logger.info(`📊 Memory raw output: '${mem.trim()}'`);
-      }
+      const { stdout: mem } = await execAsync(`${sshCommand} "${memCmd}"`, { timeout: 3000 });
       
       const lines = mem.trim().split('\n');
       let memTotal = 0, memFree = 0, memAvailable = 0;
       
       lines.forEach(line => {
         if (line.startsWith('MemTotal:')) {
-          memTotal = parseInt(line.split(/\s+/)[1]) * 1024; // Convert KB to bytes
+          memTotal = parseInt(line.split(/\s+/)[1]) * 1024;
         } else if (line.startsWith('MemFree:')) {
           memFree = parseInt(line.split(/\s+/)[1]) * 1024;
         } else if (line.startsWith('MemAvailable:')) {
@@ -423,8 +409,8 @@ export class ServerMonitor extends EventEmitter {
         const memUsagePercent = (memUsed / memTotal) * 100;
         
         performance.memoryUsage = Math.round(memUsagePercent * 10) / 10;
-        performance.memoryUsed = Math.round(memUsed / 1024 / 1024 / 1024 * 10) / 10; // Convert to GB
-        performance.memoryTotal = Math.round(memTotal / 1024 / 1024 / 1024 * 10) / 10; // Convert to GB
+        performance.memoryUsed = Math.round(memUsed / 1024 / 1024 / 1024 * 10) / 10;
+        performance.memoryTotal = Math.round(memTotal / 1024 / 1024 / 1024 * 10) / 10;
         
         if (enableDebugLogs) {
           this.logger.info(`✅ Memory usage: ${performance.memoryUsage}% (${performance.memoryUsed}GB/${performance.memoryTotal}GB)`);
@@ -436,20 +422,14 @@ export class ServerMonitor extends EventEmitter {
       }
     }
         
-    // Disk I/O Usage - Simplified approach using /proc/diskstats
+    // Disk I/O Usage - with shorter timeout
     if (enableDebugLogs) {
       this.logger.info('📊 Getting disk I/O activity...');
     }
     try {
-      // Get current disk stats
       const diskCmd = `cat /proc/diskstats`;
-      const { stdout: diskStats } = await execAsync(`${sshCommand} "${diskCmd}"`, { timeout: 8000 });
+      const { stdout: diskStats } = await execAsync(`${sshCommand} "${diskCmd}"`, { timeout: 3000 });
       
-      if (enableDebugLogs) {
-        this.logger.info(`📊 Disk stats sample: '${diskStats.trim().split('\n')[0]}'`);
-      }
-      
-      // Parse disk stats - look for main disk devices and sum their I/O
       const lines = diskStats.trim().split('\n');
       let totalReads = 0, totalWrites = 0;
       
@@ -457,17 +437,15 @@ export class ServerMonitor extends EventEmitter {
         const parts = line.trim().split(/\s+/);
         if (parts.length >= 11) {
           const deviceName = parts[2];
-          // Look for main disk devices (sda, nvme0n1, vda, etc.) - not partitions
           if (/^(sd[a-z]|nvme\d+n\d+|vd[a-z])$/.test(deviceName)) {
-            totalReads += parseInt(parts[5]) || 0;   // sectors read
-            totalWrites += parseInt(parts[9]) || 0;  // sectors written
+            totalReads += parseInt(parts[5]) || 0;
+            totalWrites += parseInt(parts[9]) || 0;
           }
         }
       });
       
-      // Convert to a rough I/O percentage (this is relative, not absolute)
-      const totalIO = (totalReads + totalWrites) / 1000000; // Scale down
-      const diskIOPercent = Math.min(totalIO, 100); // Cap at 100%
+      const totalIO = (totalReads + totalWrites) / 1000000;
+      const diskIOPercent = Math.min(totalIO, 100);
       
       performance.diskUsage = Math.round(diskIOPercent * 10) / 10;
       
@@ -480,13 +458,17 @@ export class ServerMonitor extends EventEmitter {
       }
     }
 
-    // GPU Usage - Keep existing but fix potential quoting issues
+    // CRITICAL FIX: GPU Usage - kill stuck processes first, add timeout
     if (enableDebugLogs) {
       this.logger.info('📊 Getting GPU usage...');
     }
     try {
-      const gpuCmd = `nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1`;
-      const { stdout: gpu } = await execAsync(`${sshCommand} "${gpuCmd}"`, { timeout: 8000 });
+      // KILL ANY STUCK NVIDIA-SMI PROCESSES FIRST
+      await execAsync(`${sshCommand} "pkill -f 'nvidia-smi' 2>/dev/null || true"`, { timeout: 2000 }).catch(() => {});
+      
+      // Use timeout command to prevent nvidia-smi from hanging
+      const gpuCmd = `timeout 3 nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1`;
+      const { stdout: gpu } = await execAsync(`${sshCommand} "${gpuCmd}"`, { timeout: 5000 });
       const gpuValue = parseFloat(gpu.trim());
       
       if (enableDebugLogs) {
@@ -507,13 +489,14 @@ export class ServerMonitor extends EventEmitter {
       }
     }
 
-    // VRAM Usage - Keep existing but fix potential quoting issues
+    // CRITICAL FIX: VRAM Usage - add timeout and process cleanup
     if (enableDebugLogs) {
       this.logger.info('📊 Getting VRAM usage...');
     }
     try {
-      const vramCmd = `nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1`;
-      const { stdout: vram } = await execAsync(`${sshCommand} "${vramCmd}"`, { timeout: 8000 });
+      // Use timeout command to prevent nvidia-smi from hanging
+      const vramCmd = `timeout 3 nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1`;
+      const { stdout: vram } = await execAsync(`${sshCommand} "${vramCmd}"`, { timeout: 5000 });
       const vramLine = vram.trim();
       
       if (enableDebugLogs) {
@@ -558,7 +541,7 @@ export class ServerMonitor extends EventEmitter {
     }
     return performance;
   }
-  
+
   private handleAutoSleep(): void {
     if (!this.lastStatus.isOnline || !this.autoSleepConfig.enabled) {
         this.gpuIdleTimerStart = null;
