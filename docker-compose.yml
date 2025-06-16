@@ -38,7 +38,5 @@ services:
     cap_add:
       - NET_RAW
       - NET_ADMIN
-
-networks:
-  spark-network:
-    driver: bridge
+      - SYS_ADMIN  # Required for some networking operations
+    network_mode: host  # Try this if WoL still fails
