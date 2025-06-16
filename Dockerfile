@@ -38,10 +38,14 @@ RUN apk add --no-cache \
     openssh-client \
     netcat-openbsd \
     bash \
-    wakeonlan \
-    etherwake \
     ethtool \
-    iproute2
+    iproute2 \
+    python3 \
+    py3-pip
+
+# Install wakeonlan from testing repository (more reliable than pip)
+RUN echo "https://dl-cdn.alpinelinux.org/alpine/edge/testing" >> /etc/apk/repositories && \
+    apk add --no-cache wakeonlan etherwake
 
 # Copy package files
 COPY package*.json ./
