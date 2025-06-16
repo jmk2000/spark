@@ -104,7 +104,7 @@ const serverMonitor = new ServerMonitor(
   logger
 );
 
-// Enhanced proxy middleware with better error handling
+// Enhanced proxy middleware with proper timeout handling for node-fetch v2
 const proxyMiddleware = async (req, res, next) => {
   const sparkInternalPaths = ['/', '/api/status', '/api/wake', '/api/sleep', '/api/config', '/api/config/autosleep'];
   
@@ -118,6 +118,7 @@ const proxyMiddleware = async (req, res, next) => {
   const targetPath = req.originalUrl.startsWith('/') ? req.originalUrl.substring(1) : req.originalUrl;
   const targetUrl = `http://${config.targetServer.ip}:${config.targetServer.httpPort}/${targetPath}`;
   const WAKE_TIMEOUT_SECONDS = 180;
+  const PROXY_TIMEOUT_SECONDS = 300; // 5 minutes for LLM responses
 
   try {
     logger.info(`Transparent proxy triggered for [${req.method}] ${req.originalUrl}`);
@@ -166,17 +167,39 @@ const proxyMiddleware = async (req, res, next) => {
     const body = (req.method !== 'GET' && req.method !== 'HEAD' && Object.keys(req.body || {}).length > 0) 
       ? JSON.stringify(req.body) : undefined;
 
-    // Make proxy request
-    logger.debug(`Proxying to: ${targetUrl}`);
-    const proxyResponse = await fetch(targetUrl, {
-      method: req.method,
-      body: body,
-      headers: new Headers({
-        ...req.headers,
-        'host': `${config.targetServer.ip}:${config.targetServer.httpPort}`
-      }),
-      timeout: 30000 // 30 second timeout
-    });
+    // Make proxy request with proper timeout using AbortController (Node.js 18+ compatible)
+    logger.debug(`Proxying to: ${targetUrl} with ${PROXY_TIMEOUT_SECONDS}s timeout`);
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      logger.warn(`Request timeout after ${PROXY_TIMEOUT_SECONDS}s, aborting...`);
+      controller.abort();
+    }, PROXY_TIMEOUT_SECONDS * 1000);
+
+    let proxyResponse;
+    try {
+      proxyResponse = await fetch(targetUrl, {
+        method: req.method,
+        body: body,
+        headers: new Headers({
+          ...req.headers,
+          'host': `${config.targetServer.ip}:${config.targetServer.httpPort}`
+        }),
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId); // Clear timeout on success
+      logger.debug(`Proxy request completed successfully in ${Date.now()}ms`);
+      
+    } catch (fetchError: any) {
+      clearTimeout(timeoutId);
+      
+      // Handle AbortError specifically
+      if (fetchError.name === 'AbortError') {
+        throw new Error(`Request timeout after ${PROXY_TIMEOUT_SECONDS} seconds`);
+      }
+      throw fetchError;
+    }
 
     // Forward response
     res.status(proxyResponse.status);
@@ -198,11 +221,27 @@ const proxyMiddleware = async (req, res, next) => {
     logger.error(`Proxy Error for ${req.method} ${req.originalUrl}:`, error);
     
     if (!res.headersSent) {
-      res.status(500).json({ 
-        error: 'Failed to process request through proxy', 
+      let errorMessage = 'Failed to process request through proxy';
+      let statusCode = 500;
+      
+      // Provide more specific error messages
+      if (error.message.includes('timeout') || error.name === 'AbortError') {
+        errorMessage = `Request timed out after ${PROXY_TIMEOUT_SECONDS} seconds - this may be normal for long LLM responses`;
+        statusCode = 504; // Gateway Timeout
+      } else if (error.message.includes('ECONNREFUSED')) {
+        errorMessage = 'Target server refused connection';
+        statusCode = 502; // Bad Gateway
+      } else if (error.message.includes('wake-up timed out')) {
+        errorMessage = 'Server failed to wake up in time';
+        statusCode = 504; // Gateway Timeout
+      }
+      
+      res.status(statusCode).json({ 
+        error: errorMessage, 
         details: error.message,
         target: `${config.targetServer.ip}:${config.targetServer.httpPort}`,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        suggestion: statusCode === 504 ? `Try the request again with a longer timeout. Current timeout: ${PROXY_TIMEOUT_SECONDS}s` : undefined
       });
     }
   }

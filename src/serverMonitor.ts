@@ -109,7 +109,11 @@ export class ServerMonitor extends EventEmitter {
 
   private async performHealthCheck(): Promise<void> {
     try {
-      this.logger.info(`🔍 Starting health check for ${this.config.ip}`);
+      const enableDebugLogs = process.env.ENABLE_PERFORMANCE_DEBUG === 'true';
+      
+      if (enableDebugLogs) {
+        this.logger.info(`🔍 Starting health check for ${this.config.ip}`);
+      }
       
       // Test ping first
       const pingResult = await ping.promise.probe(this.config.ip, {
@@ -118,8 +122,12 @@ export class ServerMonitor extends EventEmitter {
       }).catch(() => ({ alive: false, time: 0 }));
       
       const isOnline = pingResult.alive;
-      this.logger.info(`📡 Ping result: ${isOnline ? 'ONLINE' : 'OFFLINE'} (${pingResult.time}ms)`);
+      
+      if (enableDebugLogs) {
+        this.logger.info(`📡 Ping result: ${isOnline ? 'ONLINE' : 'OFFLINE'} (${pingResult.time}ms)`);
+      }
 
+      // Only log status changes, not every check
       if (this.lastStatus.isOnline !== isOnline) {
         this.logger.info(`🔄 Server ${this.config.ip} status changed: ${isOnline ? 'ONLINE' : 'OFFLINE'}`);
       }
@@ -131,15 +139,21 @@ export class ServerMonitor extends EventEmitter {
         this.lastStatus.performance.responseTime = Math.round(Number(pingResult.time)) || 0;
         
         // Check all services
-        this.logger.info('🔧 Checking services...');
+        if (enableDebugLogs) {
+          this.logger.info('🔧 Checking services...');
+        }
         await this.checkAllServices();
         
         // If SSH is working, get performance metrics
         if (this.lastStatus.services.ssh) {
-          this.logger.info('📊 SSH available - collecting performance metrics...');
+          if (enableDebugLogs) {
+            this.logger.info('📊 SSH available - collecting performance metrics...');
+          }
           try {
             const metrics = await this.getAllPerformanceMetrics();
-            this.logger.info(`📈 Performance metrics collected:`, metrics);
+            if (enableDebugLogs) {
+              this.logger.info(`📈 Performance metrics collected:`, metrics);
+            }
             
             // Ensure we update the performance object properly
             this.lastStatus.performance = {
@@ -147,12 +161,16 @@ export class ServerMonitor extends EventEmitter {
               ...metrics
             };
             
-            this.logger.info(`💾 Final performance data:`, this.lastStatus.performance);
+            if (enableDebugLogs) {
+              this.logger.info(`💾 Final performance data:`, this.lastStatus.performance);
+            }
           } catch (error: any) {
             this.logger.error(`❌ Performance metrics collection failed:`, error.message);
           }
         } else {
-          this.logger.warn('⚠️ SSH not available - cannot collect performance metrics');
+          if (enableDebugLogs) {
+            this.logger.warn('⚠️ SSH not available - cannot collect performance metrics');
+          }
           this.lastStatus.performance = {
             responseTime: this.lastStatus.performance.responseTime,
             cpuUsage: undefined,
@@ -176,13 +194,15 @@ export class ServerMonitor extends EventEmitter {
       
       this.handleAutoSleep();
       
-      // Always emit status update with detailed logging
+      // Always emit status update but with less verbose logging
       const statusToEmit = await this.getServerStatus();
-      this.logger.info('📤 Emitting status update to UI:', {
-        isOnline: statusToEmit.isOnline,
-        services: statusToEmit.services,
-        performance: statusToEmit.performance
-      });
+      if (enableDebugLogs) {
+        this.logger.info('📤 Emitting status update to UI:', {
+          isOnline: statusToEmit.isOnline,
+          services: statusToEmit.services,
+          performance: statusToEmit.performance
+        });
+      }
       this.emit('statusUpdate', statusToEmit);
       
     } catch (error: any) {
@@ -291,35 +311,79 @@ export class ServerMonitor extends EventEmitter {
 
     const sshCommand = `ssh -i /app/.ssh/id_rsa -o ConnectTimeout=5 -o StrictHostKeyChecking=no -o BatchMode=yes -p ${this.config.sshPort} ${username}@${this.config.ip}`;
     
-    // CPU Usage - use simple vmstat approach
+    // CPU Usage - Fixed: Get actual CPU usage percentage, not load average
     if (enableDebugLogs) {
       this.logger.info('📊 Getting CPU usage...');
     }
     try {
-      const cpuCmd = `vmstat 1 2 | tail -1 | awk '{print 100-$15}'`;
-      const { stdout: cpu } = await execAsync(`${sshCommand} "${cpuCmd}"`, { timeout: 10000 });
-      const cpuValue = parseFloat(cpu.trim());
+      // Method 1: Use /proc/stat to calculate actual CPU usage over a short period
+      const cpuCmd1 = `cat /proc/stat | grep '^cpu '`;
+      const { stdout: cpu1 } = await execAsync(`${sshCommand} "${cpuCmd1}"`, { timeout: 5000 });
+      
+      // Wait 1 second and get another reading
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const { stdout: cpu2 } = await execAsync(`${sshCommand} "${cpuCmd1}"`, { timeout: 5000 });
+      
       if (enableDebugLogs) {
-        this.logger.info(`📊 CPU raw output: '${cpu.trim()}', parsed: ${cpuValue}`);
+        this.logger.info(`📊 CPU stat1: '${cpu1.trim()}'`);
+        this.logger.info(`📊 CPU stat2: '${cpu2.trim()}'`);
       }
       
-      if (!isNaN(cpuValue) && cpuValue >= 0 && cpuValue <= 100) {
-        performance.cpuUsage = Math.round(cpuValue * 10) / 10;
-        if (enableDebugLogs) {
-          this.logger.info(`✅ CPU usage: ${performance.cpuUsage}%`);
+      // Parse both readings
+      const parseStats = (statLine: string) => {
+        const numbers = statLine.trim().split(/\s+/).slice(1).map(Number);
+        if (numbers.length >= 4) {
+          const user = numbers[0];
+          const nice = numbers[1]; 
+          const system = numbers[2];
+          const idle = numbers[3];
+          const iowait = numbers[4] || 0;
+          const irq = numbers[5] || 0;
+          const softirq = numbers[6] || 0;
+          const steal = numbers[7] || 0;
+          
+          const totalIdle = idle + iowait;
+          const totalNonIdle = user + nice + system + irq + softirq + steal;
+          const total = totalIdle + totalNonIdle;
+          
+          return { total, idle: totalIdle };
         }
-      } else {
-        // Fallback: use uptime load average as rough CPU indicator
-        const fallbackCmd = `uptime | awk -F'load average:' '{print $2}' | awk '{print $1*10}' | sed 's/,//'`;
-        const { stdout: fallback } = await execAsync(`${sshCommand} "${fallbackCmd}"`, { timeout: 5000 });
-        const fallbackValue = parseFloat(fallback.trim());
-        if (!isNaN(fallbackValue) && fallbackValue >= 0) {
-          performance.cpuUsage = Math.min(Math.round(fallbackValue * 10) / 10, 100);
-          if (enableDebugLogs) {
-            this.logger.info(`✅ CPU usage (fallback): ${performance.cpuUsage}%`);
+        return null;
+      };
+      
+      const stats1 = parseStats(cpu1);
+      const stats2 = parseStats(cpu2);
+      
+      if (stats1 && stats2) {
+        const totalDiff = stats2.total - stats1.total;
+        const idleDiff = stats2.idle - stats1.idle;
+        
+        if (totalDiff > 0) {
+          const cpuUsage = ((totalDiff - idleDiff) / totalDiff) * 100;
+          
+          if (!isNaN(cpuUsage) && cpuUsage >= 0 && cpuUsage <= 100) {
+            performance.cpuUsage = Math.round(cpuUsage * 10) / 10;
+            if (enableDebugLogs) {
+              this.logger.info(`✅ CPU usage (calculated): ${performance.cpuUsage}%`);
+            }
           }
-        } else if (enableDebugLogs) {
-          this.logger.warn(`⚠️ Invalid CPU value: ${cpuValue}, fallback: ${fallbackValue}`);
+        }
+      }
+      
+      // Fallback: if the calculation failed, use load average but scale it properly
+      if (!performance.cpuUsage) {
+        const loadCmd = `cat /proc/loadavg`;
+        const { stdout: load } = await execAsync(`${sshCommand} "${loadCmd}"`, { timeout: 5000 });
+        const loadAvg = parseFloat(load.trim().split(' ')[0]);
+        
+        if (!isNaN(loadAvg) && loadAvg >= 0) {
+          // Scale load average to percentage - load of 1.0 = 100% on single core
+          // But cap it more reasonably since load can be > 1.0
+          performance.cpuUsage = Math.min(Math.round(loadAvg * 50 * 10) / 10, 100);
+          if (enableDebugLogs) {
+            this.logger.info(`✅ CPU usage (load fallback): ${performance.cpuUsage}%`);
+          }
         }
       }
     } catch (error: any) {
@@ -327,84 +391,96 @@ export class ServerMonitor extends EventEmitter {
         this.logger.error(`❌ CPU metrics failed: ${error.message}`);
       }
     }
-    // Memory Usage - use meminfo approach to avoid awk issues
-        if (enableDebugLogs) {
-          this.logger.info('📊 Getting memory usage...');
-        }
-        try {
-          // Use /proc/meminfo which is more reliable - simplified command
-          const memCmd = `cat /proc/meminfo | grep -E '^(MemTotal|MemAvailable):' | awk '{print $2}' | tr '\\n' ',' | sed 's/,$//'`;
-          const { stdout: mem } = await execAsync(`${sshCommand} "${memCmd}"`, { timeout: 8000 });
-          const memValues = mem.trim().split(',');
-          
-          if (enableDebugLogs) {
-            this.logger.info(`📊 Memory raw output: '${mem.trim()}', values: ${JSON.stringify(memValues)}`);
-          }
-          
-          if (memValues.length >= 2) {
-            const total = parseFloat(memValues[0]) * 1024; // KB to bytes
-            const available = parseFloat(memValues[1]) * 1024; // KB to bytes
-            const used = total - available;
-            const memValue = (used / total) * 100;
-            
-            if (!isNaN(memValue) && memValue >= 0 && memValue <= 100) {
-              performance.memoryUsage = Math.round(memValue * 10) / 10;
-              performance.memoryUsed = Math.round(used / 1024 / 1024 / 1024 * 10) / 10; // Bytes to GB
-              performance.memoryTotal = Math.round(total / 1024 / 1024 / 1024 * 10) / 10; // Bytes to GB
-              if (enableDebugLogs) {
-                this.logger.info(`✅ Memory usage: ${performance.memoryUsage}% (${performance.memoryUsed}GB/${performance.memoryTotal}GB)`);
-              }
-            } else if (enableDebugLogs) {
-              this.logger.warn(`⚠️ Invalid memory calculation: used=${used}, total=${total}, percentage=${memValue}`);
-            }
-          } else if (enableDebugLogs) {
-            this.logger.warn(`⚠️ Memory command returned unexpected format: ${memValues.length} values`);
-          }
-        } catch (error: any) {
-          if (enableDebugLogs) {
-            this.logger.error(`❌ Memory metrics failed: ${error.message}`);
-          }
-        }
-        
-    // Disk Usage - simplest possible approach
+
+    // Memory Usage - Simplified approach
     if (enableDebugLogs) {
-      this.logger.info('📊 Getting disk usage...');
+      this.logger.info('📊 Getting memory usage...');
     }
     try {
-      // Try df with percentage output format first
-      const diskCmd = `df --output=pcent / | grep -v Use | tr -d ' %'`;
-      const { stdout: disk } = await execAsync(`${sshCommand} "${diskCmd}"`, { timeout: 8000 });
-      const diskValue = parseFloat(disk.trim());
+      // Get memory info with simple commands
+      const memCmd = `cat /proc/meminfo | head -3`;
+      const { stdout: mem } = await execAsync(`${sshCommand} "${memCmd}"`, { timeout: 8000 });
+      
       if (enableDebugLogs) {
-        this.logger.info(`📊 Disk raw output: '${disk.trim()}', parsed: ${diskValue}`);
+        this.logger.info(`📊 Memory raw output: '${mem.trim()}'`);
       }
       
-      if (!isNaN(diskValue) && diskValue >= 0 && diskValue <= 100) {
-        performance.diskUsage = diskValue;
-        if (enableDebugLogs) {
-          this.logger.info(`✅ Disk usage: ${performance.diskUsage}%`);
+      const lines = mem.trim().split('\n');
+      let memTotal = 0, memFree = 0, memAvailable = 0;
+      
+      lines.forEach(line => {
+        if (line.startsWith('MemTotal:')) {
+          memTotal = parseInt(line.split(/\s+/)[1]) * 1024; // Convert KB to bytes
+        } else if (line.startsWith('MemFree:')) {
+          memFree = parseInt(line.split(/\s+/)[1]) * 1024;
+        } else if (line.startsWith('MemAvailable:')) {
+          memAvailable = parseInt(line.split(/\s+/)[1]) * 1024;
         }
-      } else {
-        // Fallback: parse the percentage from regular df output with simpler awk
-        const fallbackCmd = `df / | grep -v Filesystem | awk '{print $5}' | sed 's/%//'`;
-        const { stdout: fallback } = await execAsync(`${sshCommand} "${fallbackCmd}"`, { timeout: 5000 });
-        const fallbackValue = parseFloat(fallback.trim());
-        if (!isNaN(fallbackValue) && fallbackValue >= 0 && fallbackValue <= 100) {
-          performance.diskUsage = fallbackValue;
-          if (enableDebugLogs) {
-            this.logger.info(`✅ Disk usage (fallback): ${performance.diskUsage}%`);
-          }
-        } else if (enableDebugLogs) {
-          this.logger.warn(`⚠️ Invalid disk value: ${diskValue}, fallback: ${fallbackValue}`);
+      });
+      
+      if (memTotal > 0 && memAvailable >= 0) {
+        const memUsed = memTotal - memAvailable;
+        const memUsagePercent = (memUsed / memTotal) * 100;
+        
+        performance.memoryUsage = Math.round(memUsagePercent * 10) / 10;
+        performance.memoryUsed = Math.round(memUsed / 1024 / 1024 / 1024 * 10) / 10; // Convert to GB
+        performance.memoryTotal = Math.round(memTotal / 1024 / 1024 / 1024 * 10) / 10; // Convert to GB
+        
+        if (enableDebugLogs) {
+          this.logger.info(`✅ Memory usage: ${performance.memoryUsage}% (${performance.memoryUsed}GB/${performance.memoryTotal}GB)`);
         }
       }
     } catch (error: any) {
       if (enableDebugLogs) {
-        this.logger.error(`❌ Disk metrics failed: ${error.message}`);
+        this.logger.error(`❌ Memory metrics failed: ${error.message}`);
+      }
+    }
+        
+    // Disk I/O Usage - Simplified approach using /proc/diskstats
+    if (enableDebugLogs) {
+      this.logger.info('📊 Getting disk I/O activity...');
+    }
+    try {
+      // Get current disk stats
+      const diskCmd = `cat /proc/diskstats`;
+      const { stdout: diskStats } = await execAsync(`${sshCommand} "${diskCmd}"`, { timeout: 8000 });
+      
+      if (enableDebugLogs) {
+        this.logger.info(`📊 Disk stats sample: '${diskStats.trim().split('\n')[0]}'`);
+      }
+      
+      // Parse disk stats - look for main disk devices and sum their I/O
+      const lines = diskStats.trim().split('\n');
+      let totalReads = 0, totalWrites = 0;
+      
+      lines.forEach(line => {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 11) {
+          const deviceName = parts[2];
+          // Look for main disk devices (sda, nvme0n1, vda, etc.) - not partitions
+          if (/^(sd[a-z]|nvme\d+n\d+|vd[a-z])$/.test(deviceName)) {
+            totalReads += parseInt(parts[5]) || 0;   // sectors read
+            totalWrites += parseInt(parts[9]) || 0;  // sectors written
+          }
+        }
+      });
+      
+      // Convert to a rough I/O percentage (this is relative, not absolute)
+      const totalIO = (totalReads + totalWrites) / 1000000; // Scale down
+      const diskIOPercent = Math.min(totalIO, 100); // Cap at 100%
+      
+      performance.diskUsage = Math.round(diskIOPercent * 10) / 10;
+      
+      if (enableDebugLogs) {
+        this.logger.info(`✅ Disk I/O activity: ${performance.diskUsage}% (reads: ${totalReads}, writes: ${totalWrites})`);
+      }
+    } catch (error: any) {
+      if (enableDebugLogs) {
+        this.logger.error(`❌ Disk I/O metrics failed: ${error.message}`);
       }
     }
 
-    // GPU Usage and VRAM
+    // GPU Usage - Keep existing but fix potential quoting issues
     if (enableDebugLogs) {
       this.logger.info('📊 Getting GPU usage...');
     }
@@ -412,6 +488,7 @@ export class ServerMonitor extends EventEmitter {
       const gpuCmd = `nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | head -1`;
       const { stdout: gpu } = await execAsync(`${sshCommand} "${gpuCmd}"`, { timeout: 8000 });
       const gpuValue = parseFloat(gpu.trim());
+      
       if (enableDebugLogs) {
         this.logger.info(`📊 GPU raw output: '${gpu.trim()}', parsed: ${gpuValue}`);
       }
@@ -430,12 +507,11 @@ export class ServerMonitor extends EventEmitter {
       }
     }
 
-    // VRAM Usage
+    // VRAM Usage - Keep existing but fix potential quoting issues
     if (enableDebugLogs) {
       this.logger.info('📊 Getting VRAM usage...');
     }
     try {
-      // Get VRAM values separately then calculate in JavaScript to avoid shell escaping issues
       const vramCmd = `nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1`;
       const { stdout: vram } = await execAsync(`${sshCommand} "${vramCmd}"`, { timeout: 8000 });
       const vramLine = vram.trim();
@@ -445,7 +521,6 @@ export class ServerMonitor extends EventEmitter {
       }
       
       if (vramLine && vramLine !== '') {
-        // Parse the comma-separated values
         const vramValues = vramLine.split(',').map(v => v.trim());
         if (vramValues.length === 2) {
           const used = parseFloat(vramValues[0]);
@@ -458,8 +533,8 @@ export class ServerMonitor extends EventEmitter {
           
           if (!isNaN(vramValue) && vramValue >= 0 && vramValue <= 100) {
             performance.vramUsage = Math.round(vramValue * 10) / 10;
-            performance.vramUsed = Math.round(used / 1024 * 10) / 10; // Convert MB to GB
-            performance.vramTotal = Math.round(total / 1024 * 10) / 10; // Convert MB to GB
+            performance.vramUsed = Math.round(used / 1024 * 10) / 10;
+            performance.vramTotal = Math.round(total / 1024 * 10) / 10;
             if (enableDebugLogs) {
               this.logger.info(`✅ VRAM usage: ${performance.vramUsage}% (${performance.vramUsed}GB/${performance.vramTotal}GB)`);
             }
@@ -483,7 +558,7 @@ export class ServerMonitor extends EventEmitter {
     }
     return performance;
   }
-
+  
   private handleAutoSleep(): void {
     if (!this.lastStatus.isOnline || !this.autoSleepConfig.enabled) {
         this.gpuIdleTimerStart = null;

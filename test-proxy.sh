@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# Generic Transparent Proxy Test Script (.env enabled)
+# Enhanced SPARK Proxy Test Script (.env enabled)
 #
-# This script sends a request to the SPARK proxy endpoint. It will automatically
-# load settings from a '.env' file in the same directory if it exists.
+# This script sends a request to the SPARK proxy endpoint with proper timeout
+# handling for LLM responses which can take several minutes.
 # ==============================================================================
 
 # --- Configuration ---
@@ -24,11 +24,17 @@ TARGET_PATH=${TEST_TARGET_PATH:-"api/generate"}
 # The model name to use. Uses environment variable or a default.
 MODEL_NAME=${TEST_MODEL_NAME:-"llama3"}
 
+# Timeout for the request (5 minutes for LLM responses)
+TIMEOUT_SECONDS=${TEST_TIMEOUT:-300}
+
 # --- Script Logic ---
 
 if [ -z "$1" ]; then
     echo "🔴 Error: Please provide a prompt as an argument."
     echo "   Example: ./test-proxy.sh \"Tell me a fun fact about space.\""
+    echo ""
+    echo "   Optional: Set TEST_TIMEOUT environment variable for custom timeout (default: 300 seconds)"
+    echo "   Example: TEST_TIMEOUT=600 ./test-proxy.sh \"Write a long story about space.\""
     exit 1
 fi
 
@@ -45,14 +51,33 @@ EOF
 )
 
 echo "▶️  Sending test request to transparent proxy at ${SPARK_URL}/${TARGET_PATH}"
+echo "⏱️  Timeout set to ${TIMEOUT_SECONDS} seconds (normal for LLM responses)"
 echo "----------------------------------------------------------------------"
 
-# Use curl to send a POST request to the SPARK proxy.
-# We use jq to pretty-print the JSON response. If you don't have jq,
-# you can remove the '| jq' part. (Install with: brew install jq)
-curl -s -X POST "${SPARK_URL}/${TARGET_PATH}" \
--H "Content-Type: application/json" \
--d "${REQUEST_BODY}" | jq
+# Use curl with a longer timeout for LLM responses
+# Show progress and handle timeouts gracefully
+START_TIME=$(date +%s)
 
-echo -e "\n----------------------------------------------------------------------"
-echo "✅ Request complete."
+curl -s -X POST "${SPARK_URL}/${TARGET_PATH}" \
+  -H "Content-Type: application/json" \
+  -d "${REQUEST_BODY}" \
+  --max-time ${TIMEOUT_SECONDS} \
+  --connect-timeout 30 \
+  --write-out "\n📊 HTTP Status: %{http_code}\n⏱️  Total Time: %{time_total}s\n" | jq '.' 2>/dev/null || {
+    # If jq fails or response isn't JSON, show raw response
+    echo "⚠️  Response was not valid JSON or jq is not installed. Raw response above."
+  }
+
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+
+echo "----------------------------------------------------------------------"
+echo "✅ Request complete after ${DURATION} seconds."
+
+if [ $DURATION -gt 60 ]; then
+    echo "ℹ️  Note: Long response time is normal for LLM generation."
+fi
+
+if [ $DURATION -ge $TIMEOUT_SECONDS ]; then
+    echo "⚠️  Request may have timed out. Consider increasing TEST_TIMEOUT if needed."
+fi
