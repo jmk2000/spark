@@ -301,6 +301,13 @@ export class ServerMonitor extends EventEmitter {
 
   private async getAllPerformanceMetrics(): Promise<Partial<ServerStatus['performance']>> {
     const performance: Partial<ServerStatus['performance']> = {};
+    
+    // EMERGENCY: Skip ALL performance monitoring if emergency mode enabled
+    if (process.env.EMERGENCY_MODE === 'true') {
+      this.logger.info('🚨 Emergency mode: Skipping all performance monitoring');
+      return performance;
+    }
+    
     const username = process.env.SSH_USERNAME;
     const enableDebugLogs = process.env.ENABLE_PERFORMANCE_DEBUG === 'true';
     
@@ -312,7 +319,7 @@ export class ServerMonitor extends EventEmitter {
     // CRITICAL FIX: Reduced SSH timeout and added more aggressive timeouts
     const sshCommand = `ssh -i /app/.ssh/id_rsa -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o BatchMode=yes -p ${this.config.sshPort} ${username}@${this.config.ip}`;
     
-    // CPU Usage - same as before but with shorter timeout
+    // CPU Usage - with shorter timeout
     if (enableDebugLogs) {
       this.logger.info('📊 Getting CPU usage...');
     }
@@ -541,7 +548,7 @@ export class ServerMonitor extends EventEmitter {
     }
     return performance;
   }
-
+  
   private handleAutoSleep(): void {
     if (!this.lastStatus.isOnline || !this.autoSleepConfig.enabled) {
         this.gpuIdleTimerStart = null;
